@@ -1,0 +1,35 @@
+# ── Env / secrets ─────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Python ────────────────────────────────────────────────────────────────────
+scylla-service/.venv/
+scylla-service/__pycache__/
+scylla-service/**/__pycache__/
+scylla-service/**/*.pyc
+scylla-service/**/*.pyo
+scylla-service/.pytest_cache/
+scylla-service/.mypy_cache/
+scylla-service/.ruff_cache/
+scylla-service/*.egg-info/
+scylla-service/dist/
+scylla-service/build/
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+scylla-fe/node_modules/
+scylla-fe/dist/
+scylla-fe/.vite/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# keys
+*.pem

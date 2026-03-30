@@ -1,0 +1,30 @@
+# Git
+.git
+.gitignore
+
+# Env files — never bake secrets into the image
+.env
+.env.*
+!.env.example
+
+# Python
+scylla-service/.venv
+scylla-service/__pycache__
+scylla-service/**/__pycache__
+scylla-service/**/*.pyc
+scylla-service/**/*.pyo
+scylla-service/.pytest_cache
+scylla-service/.mypy_cache
+scylla-service/.ruff_cache
+
+# Node / frontend
+scylla-fe/node_modules
+scylla-fe/dist
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Docs / misc
+README.md
+*.md
