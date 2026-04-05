@@ -27,7 +27,7 @@ export default function Sidebar() {
       <div className="flex items-center justify-between px-3 py-3 border-b border-gray-800">
         <div className="flex items-center gap-2 min-w-0">
           <DatabaseIcon />
-          <span className="text-sm font-semibold text-white truncate">ScyllaDB</span>
+          <span className="text-sm font-semibold text-white truncate">ScyllaScope</span>
         </div>
         <button
           className="text-gray-600 hover:text-gray-300 transition-colors disabled:opacity-30 flex-shrink-0 ml-1"
