@@ -2,6 +2,27 @@ import { useCallback, useRef, useState } from 'react'
 import { useAppContext } from '../../context/AppContext.jsx'
 import { useColumnResize } from '../../hooks/useColumnResize.js'
 
+// ─── CSV helpers ──────────────────────────────────────────────────────────────
+
+function toCSV(columns, rows) {
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v)
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  return [columns.map(esc).join(','), ...rows.map(r => columns.map(c => esc(r[c])).join(','))].join('\n')
+}
+
+function triggerDownload(filename, csv) {
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 const MAX_CELL_LENGTH = 120
 const COPY_RESET_MS = 1500
 
@@ -38,6 +59,22 @@ function CheckIcon() {
   return (
     <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+    </svg>
+  )
+}
+
+function DownloadIcon() {
+  return (
+    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+    </svg>
+  )
+}
+
+function SpinIcon() {
+  return (
+    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
     </svg>
   )
 }
@@ -161,8 +198,24 @@ function ErrorState({ error }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ResultsTable() {
-  const { result, queryError, queryLoading, currentPage, totalLabel } = useAppContext()
+  const { result, queryError, queryLoading, currentPage, totalLabel, fetchAllRows } = useAppContext()
   const { copied, copy } = useCopyCell()
+  const [exporting, setExporting] = useState(false)
+
+  function handleExportPage() {
+    if (!result) return
+    triggerDownload(`query-page-${currentPage}.csv`, toCSV(result.columns, result.rows))
+  }
+
+  async function handleExportAll() {
+    setExporting(true)
+    try {
+      const data = await fetchAllRows()
+      if (data) triggerDownload('query-all-rows.csv', toCSV(data.columns, data.rows))
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const columns = result?.columns ?? []
   const { getWidth, startResize } = useColumnResize(columns)
@@ -193,7 +246,26 @@ export default function ResultsTable() {
         <span className="tabular-nums">
           {totalLabel ? `page ${currentPage} of ${totalLabel}` : `page ${currentPage}`}
         </span>
-        <span className="ml-auto text-gray-700">drag edges to resize</span>
+        <div className="ml-auto flex items-center gap-3">
+          <span className="text-gray-700">drag edges to resize</span>
+          <button
+            onClick={handleExportPage}
+            className="flex items-center gap-1 text-gray-600 hover:text-gray-300 transition-colors"
+            title="Export current page to CSV"
+          >
+            <DownloadIcon />
+            <span>Export page</span>
+          </button>
+          <button
+            onClick={handleExportAll}
+            disabled={exporting}
+            className="flex items-center gap-1 text-gray-600 hover:text-gray-300 transition-colors disabled:opacity-40"
+            title="Export all rows to CSV"
+          >
+            {exporting ? <SpinIcon /> : <DownloadIcon />}
+            <span>{exporting ? 'Exporting…' : 'Export all'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Table */}

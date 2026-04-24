@@ -94,6 +94,20 @@ export function AppProvider({ children }) {
     setQueryError(null)
   }
 
+  // Collect every row across all pages — uses cache first, then fetches remaining pages
+  async function fetchAllRows() {
+    if (!query.trim() || pageCache.length === 0) return null
+    const columns = pageCache[0].data.columns
+    const allRows = pageCache.flatMap((entry) => entry.data.rows)
+    let token = pageCache[pageCache.length - 1].nextToken
+    while (token) {
+      const data = await runQuery(query, { pagingState: token })
+      allRows.push(...data.rows)
+      token = data.paging_state ?? null
+    }
+    return { columns, rows: allRows }
+  }
+
   // ── Core fetch ────────────────────────────────────────────────────────────────
 
   async function _fetch(q, token, targetPage) {
@@ -130,7 +144,7 @@ export function AppProvider({ children }) {
         result, queryLoading, queryError,
         // Pagination
         pagingState, currentPage, totalLabel, canPrev, canNext,
-        execute, nextPage, prevPage, reset,
+        execute, nextPage, prevPage, reset, fetchAllRows,
       }}
     >
       {children}
