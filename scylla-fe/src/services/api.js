@@ -1,51 +1,61 @@
-import axios from 'axios'
+/**
+ * Backend calls.
+ *
+ * Every request goes through apiClient's `apiRequest`, which owns the base URL,
+ * the auth header, and the 401 refresh-and-retry. Nothing here is auth-aware —
+ * and nothing outside this module should call the backend directly.
+ */
+import { apiRequest } from '../api/apiClient.js'
 
-// Always relative — the server (Vite dev proxy or nginx) forwards to the backend.
-// The browser never needs to know the backend's address.
-const BASE_URL = '/api/v1'
+class ApiError extends Error {
+  constructor(message, code, status) {
+    super(message)
+    this.name = 'ApiError'
+    this.code = code
+    this.status = status
+  }
+}
 
-const client = axios.create({
-  baseURL: BASE_URL,
-  headers: { 'Content-Type': 'application/json' },
-})
-
-// Unwrap the response envelope and throw a structured error on failure.
-client.interceptors.response.use(
-  (response) => {
-    const body = response.data
-    if (!body.success) {
-      const err = new Error(body.error?.message ?? 'Unknown API error')
-      err.code = body.error?.code ?? 'UNKNOWN'
-      err.status = response.status
-      return Promise.reject(err)
+/**
+ * Unwrap the { success, data, error } envelope and normalise every failure
+ * into an ApiError carrying message/code/status.
+ */
+async function call(path, opts = {}) {
+  let body
+  try {
+    body = await apiRequest(path, opts)
+  } catch (err) {
+    // Network / timeout — the request never got a response
+    if (!err.response) {
+      throw new ApiError(err.message ?? 'Network error', 'NETWORK_ERROR', 0)
     }
-    return body.data
-  },
-  (error) => {
-    // Network / timeout errors — axios never got a response
-    if (!error.response) {
-      const err = new Error(error.message ?? 'Network error')
-      err.code = 'NETWORK_ERROR'
-      err.status = 0
-      return Promise.reject(err)
-    }
-    // HTTP errors where the server still returned our envelope
-    const body = error.response.data
-    const msg = body?.error?.message ?? error.message
-    const code = body?.error?.code ?? 'HTTP_ERROR'
-    const e = new Error(msg)
-    e.code = code
-    e.status = error.response.status
-    return Promise.reject(e)
-  },
-)
+    // HTTP error; the server may still have returned our envelope
+    const data = err.response.data
+    throw new ApiError(
+      data?.error?.message ?? err.message,
+      data?.error?.code ?? 'HTTP_ERROR',
+      err.response.status,
+    )
+  }
+
+  // 200 with success:false
+  if (!body?.success) {
+    throw new ApiError(
+      body?.error?.message ?? 'Unknown API error',
+      body?.error?.code ?? 'UNKNOWN',
+      200,
+    )
+  }
+
+  return body.data
+}
 
 /**
  * GET /health
  * @returns {{ status: string, scylladb: string }}
  */
 export async function getHealth() {
-  return client.get('/health')
+  return call('/api/v1/health')
 }
 
 /**
@@ -53,7 +63,7 @@ export async function getHealth() {
  * @returns {{ keyspaces: Array<{ name: string, replication: object }> }}
  */
 export async function getKeyspaces() {
-  return client.get('/keyspaces')
+  return call('/api/v1/keyspaces')
 }
 
 /**
@@ -62,7 +72,7 @@ export async function getKeyspaces() {
  * @returns {{ keyspace: string, tables: string[] }}
  */
 export async function getTables(keyspace) {
-  return client.get('/tables', { params: { keyspace } })
+  return call('/api/v1/tables', { params: { keyspace } })
 }
 
 /**
@@ -72,7 +82,7 @@ export async function getTables(keyspace) {
  * @returns {{ table_name: string, keyspace: string, columns: Array<{ name: string, type: string, kind: 'partition_key'|'clustering'|'regular' }> }}
  */
 export async function getSchema(keyspace, table) {
-  return client.get('/schema', { params: { keyspace, table } })
+  return call('/api/v1/schema', { params: { keyspace, table } })
 }
 
 /**
@@ -82,9 +92,12 @@ export async function getSchema(keyspace, table) {
  * @returns {{ columns: string[], rows: object[], row_count: number, paging_state: string|null }}
  */
 export async function runQuery(query, { pageSize = 50, pagingState = null } = {}) {
-  return client.post('/query', {
-    query,
-    page_size: pageSize,
-    paging_state: pagingState,
+  return call('/api/v1/query', {
+    method: 'POST',
+    data: {
+      query,
+      page_size: pageSize,
+      paging_state: pagingState,
+    },
   })
 }

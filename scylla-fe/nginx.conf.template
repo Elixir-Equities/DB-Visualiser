@@ -1,32 +1,3 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Access gate for /api/
-#
-# The SPA calls its own origin (fetch('/api/v1/...')), so a legitimate call is
-# always Sec-Fetch-Site: same-origin. `Sec-Fetch-*` is set by the browser and
-# CANNOT be overridden by page JavaScript, so it reliably separates the app's
-# own calls from cross-site fetches, curl, or a URL typed straight into the bar
-# (Sec-Fetch-Site: none). The Origin allow-list additionally permits genuine
-# cross-origin calls from the portal (e.g. CORS preflight).
-# ─────────────────────────────────────────────────────────────────────────────
-
-# 1 when the request is the app calling its own /api, else 0.
-map $http_sec_fetch_site $sfs_ok {
-    default      0;
-    same-origin  1;
-}
-
-# 1 when the request carries the portal's Origin, else 0.
-map $http_origin $origin_ok {
-    default                               0;
-    "~^https://portal\.paisasmart\.com$"  1;
-}
-
-# Reflect the portal Origin back for CORS; empty (header omitted) otherwise.
-map $http_origin $cors_origin {
-    default                               "";
-    "~^https://portal\.paisasmart\.com$"  $http_origin;
-}
-
 server {
     listen 80;
     root /usr/share/nginx/html;
@@ -43,30 +14,21 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # Proxy /api/* to the backend, but only for the app's own calls / the portal.
-    # Set BACKEND_URL at container runtime, e.g. docker run -e BACKEND_URL=http://api:8000
+    # Port 80 is the only published port (see the README run command), so the
+    # middleware gateway reaches the backend through here. Requests arrive
+    # server-to-server from the gateway, already carrying the X-API-Key it
+    # attached after verifying the caller's Firebase token — they are simply
+    # forwarded on.
+    #
+    # Two things this block deliberately does NOT do:
+    #   * No X-API-Key injection. nginx adding the key would let anyone call
+    #     this origin directly and reach the backend with no Firebase token,
+    #     bypassing the gateway. Without it, an unauthenticated call still
+    #     gets a 401 from the backend, which stays the real gate.
+    #   * No Sec-Fetch-Site / Origin gate. Those headers are set by browsers;
+    #     the gateway's server-side request carries neither, so such a gate
+    #     would 403 every legitimate call.
     location /api/ {
-        # Deny unless it is a same-origin app call OR carries the portal Origin.
-        set $api_gate "${sfs_ok}${origin_ok}";
-        if ($api_gate = "00") {
-            return 403;
-        }
-
-        # ── CORS (only the portal Origin is ever reflected) ─────────────────
-        add_header Access-Control-Allow-Origin      $cors_origin always;
-        add_header Access-Control-Allow-Credentials "true"       always;
-        add_header Vary                             Origin       always;
-
-        # Preflight
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin  $cors_origin always;
-            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            add_header Access-Control-Max-Age       86400 always;
-            add_header Content-Length 0;
-            return 204;
-        }
-
         proxy_pass          ${BACKEND_URL}/api/;
         proxy_http_version  1.1;
         proxy_set_header    Host              $host;

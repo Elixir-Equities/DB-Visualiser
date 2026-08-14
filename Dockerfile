@@ -7,6 +7,28 @@ COPY scylla-fe/package.json scylla-fe/package-lock.json ./
 RUN npm ci
 
 COPY scylla-fe/ ./
+
+# Gateway config is inlined into the bundle at build time. The local-mode vars
+# (VITE_LOCAL_API_KEY / _URL) are deliberately NOT passed, so a deployed image
+# can never carry a local API key in its public JS.
+ARG APP_ENV=production
+ARG PARENT_ORIGIN
+ARG MIDDLEWARE_BASE_URL
+ARG SCYLLA_VISUALIZER_GATEWAY
+ARG GATEWAY_WS_URL
+
+# A local-mode build ships an auth bypass — refuse to produce one.
+RUN if [ "$APP_ENV" = "local" ]; then \
+        echo "ERROR: refusing to build with APP_ENV=local — local builds must never be deployed." >&2; \
+        exit 1; \
+    fi
+
+ENV VITE_APP_ENV=$APP_ENV \
+    VITE_PARENT_ORIGIN=$PARENT_ORIGIN \
+    VITE_MIDDLEWARE_BASE_URL=$MIDDLEWARE_BASE_URL \
+    VITE_SCYLLA_VISUALIZER_GATEWAY=$SCYLLA_VISUALIZER_GATEWAY \
+    VITE_GATEWAY_WS_URL=$GATEWAY_WS_URL
+
 RUN npm run build
 
 

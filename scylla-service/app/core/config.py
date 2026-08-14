@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
 
+    # Shared secret every /api/v1 caller must send as the X-API-Key header.
+    # Injected by the proxy (nginx / Vite dev proxy) — never exposed to the browser.
+    INTERNAL_API_TOKEN: str = ""
+
     # ScyllaDB / Cassandra
     SCYLLA_CONTACT_POINTS: str = "127.0.0.1"
     SCYLLA_PORT: int = 9042
