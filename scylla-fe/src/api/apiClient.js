@@ -60,8 +60,10 @@ const isFramed = typeof window !== 'undefined' && window.parent !== window
 const canTalkToParent = isFramed && !IS_LOCAL && PARENT_ORIGIN !== ''
 
 // If the parent never answers, a request must not hang forever. Give up waiting
-// and send unauthenticated so the gateway returns a real 401.
-const TOKEN_TIMEOUT_MS = 5000
+// and send unauthenticated so the gateway returns a real 401. Without this the
+// wrong-parent case would hang forever: a postMessage to a mismatched
+// targetOrigin is silently dropped, so a token can never arrive.
+const TOKEN_TIMEOUT_MS = 8000
 
 if (typeof window !== 'undefined') {
   // The only writer of authToken. Stays active for the tab's lifetime so the
@@ -80,18 +82,25 @@ if (typeof window !== 'undefined') {
 export function requestToken() {
   if (!canTalkToParent) return Promise.resolve(null)
 
-  window.parent.postMessage({ type: 'REQUEST_TOKEN' }, PARENT_ORIGIN)
-
   return new Promise((resolve) => {
     let settled = false
-    const settle = (value) => {
+    const settle = (token) => {
       if (settled) return
       settled = true
+      clearTimeout(timer)
       tokenWaiters = tokenWaiters.filter((w) => w !== settle)
-      resolve(value)
+      resolve(token) // the token, or null on timeout
     }
+    const timer = setTimeout(() => settle(null), TOKEN_TIMEOUT_MS)
+
+    // Coalesce: if a REQUEST_TOKEN is already in flight, just wait on it.
+    // Otherwise the warm-up and the first call each ask the parent separately
+    // and it hands out two tokens for one page load.
+    const alreadyInFlight = tokenWaiters.length > 0
     tokenWaiters.push(settle)
-    setTimeout(() => settle(null), TOKEN_TIMEOUT_MS)
+    if (!alreadyInFlight) {
+      window.parent.postMessage({ type: 'REQUEST_TOKEN' }, PARENT_ORIGIN)
+    }
   })
 }
 
@@ -104,12 +113,12 @@ if (canTalkToParent) requestToken()
 
 // ─── Requests (§7a) ──────────────────────────────────────────────────────────
 
+// Empty ({}) when no token could be obtained — the request then goes out
+// unauthenticated and the gateway returns 401 rather than the app hanging.
 async function authHeader(token) {
   if (IS_LOCAL) return LOCAL_API_KEY ? { 'X-Api-Key': LOCAL_API_KEY } : {}
-  if (token) return { Authorization: `Bearer ${token}` }
-  if (!canTalkToParent) return {}
-  const fresh = await getToken()
-  return fresh ? { Authorization: `Bearer ${fresh}` } : {}
+  const value = token ?? (await getToken()) // getToken() may resolve null on timeout
+  return value ? { Authorization: `Bearer ${value}` } : {}
 }
 
 /**
@@ -128,13 +137,23 @@ export async function apiRequest(path, opts = {}) {
       headers: { 'Content-Type': 'application/json', ...opts.headers, ...auth },
     })
 
+  const auth = await authHeader()
   try {
-    return (await send(await authHeader())).data
+    return (await send(auth)).data
   } catch (err) {
-    // Gateway mode only: an expired token gets one fresh attempt. A second 401
-    // propagates to the caller.
-    if (IS_LOCAL || err.response?.status !== 401 || !canTalkToParent) throw err
-    return (await send(await authHeader(await requestToken()))).data
+    // Only a token we actually SENT can be "expired" and worth refreshing. With
+    // no Bearer (standalone / wrong parent) the 401 is terminal — don't loop.
+    if (
+      IS_LOCAL ||
+      err.response?.status !== 401 ||
+      !canTalkToParent ||
+      !auth.Authorization
+    ) {
+      throw err
+    }
+    const token = await requestToken() // fresh token, or null on timeout
+    if (!token) throw err
+    return (await send(await authHeader(token))).data
   }
 }
 

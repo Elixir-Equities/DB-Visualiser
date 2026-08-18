@@ -139,11 +139,26 @@ sequenceDiagram
 - The refresh is **reactive** — no expiry timers; a `401` is the trigger.
 - The parent may also push a fresh `AUTH_TOKEN` **unprompted** (~hourly); the always-on
   listener just overwrites the stored token.
-- Retry happens **once**. A second `401` propagates.
+- Retry happens **once**, and **only when a token was actually sent** (a genuine expired
+  case). If no token was obtained, the `401` is terminal — no retry loop.
 
-> **No token ≠ 401.** If the parent never answers (e.g. `PARENT_ORIGIN` mismatch), the
-> request should not hang forever — put a short timeout on the token request, then send
-> unauthenticated so the gateway returns a real `401`, or surface an error.
+### 6a. When there's no valid handshake (UI loads, backend 401)
+
+The **UI always renders** — being embedded, or matching `PARENT_ORIGIN`, is *not*
+required to load the app (the frontend is not a security gate). Only the **backend**
+needs the handshake. `requestToken()` carries an **8-second timeout**, so a missing or
+mismatched parent makes calls fail **cleanly** instead of hanging:
+
+| Situation | UI | Token | Backend result |
+|---|---|---|---|
+| Embedded in the **real** parent (origin matches) | loads | flows | **works** |
+| **Standalone** (not in an iframe) | loads | none — no parent to ask | **401**, immediately |
+| Embedded in a **wrong** parent (origin ≠ `PARENT_ORIGIN`) | loads | message dropped → 8s timeout → none | **401**, after the timeout |
+| Token **expired** (real parent) | loads | refreshed | retried once → **works** |
+
+> Without the timeout the wrong-parent case would **hang forever** — a `postMessage` to a
+> mismatched `targetOrigin` is silently dropped, so a token can never arrive. The timeout
+> turns that into a clean `401`.
 
 ---
 
@@ -158,24 +173,28 @@ const CH_BASE_URL = IS_LOCAL
   ? LOCAL_API_URL
   : `${MIDDLEWARE_BASE_URL}/${GATEWAY_ROUTE}`;
 
+// Empty ({}) when no token could be obtained — the request then goes out
+// unauthenticated and the gateway returns 401 rather than the app hanging.
 async function authHeader(token) {
   if (IS_LOCAL) return LOCAL_API_KEY ? { "X-Api-Key": LOCAL_API_KEY } : {};
-  if (token) return { Authorization: `Bearer ${token}` };
-  if (!canTalkToParent) return {};
-  const fresh = await getToken();
-  return fresh ? { Authorization: `Bearer ${fresh}` } : {};
+  const value = token ?? (await getToken());   // getToken() may resolve null on timeout
+  return value ? { Authorization: `Bearer ${value}` } : {};
 }
 
 export async function apiRequest(path, opts = {}) {
   const send = (auth) => axios({ url: `${CH_BASE_URL}${path}`, ...opts,
     headers: { "Content-Type": "application/json", ...opts.headers, ...auth } });
 
+  const auth = await authHeader();
   try {
-    return (await send(await authHeader())).data;
+    return (await send(auth)).data;
   } catch (err) {
-    // gateway mode only: expired token -> fresh one -> retry once
-    if (IS_LOCAL || err.response?.status !== 401 || !canTalkToParent) throw err;
-    return (await send(await authHeader(await requestToken()))).data;
+    // Only a token we actually SENT can be "expired" and worth refreshing. With no
+    // Bearer (standalone / wrong parent) the 401 is terminal — don't loop.
+    if (IS_LOCAL || err.response?.status !== 401 || !canTalkToParent || !auth.Authorization) throw err;
+    const token = await requestToken();          // fresh token, or null on timeout
+    if (!token) throw err;
+    return (await send(await authHeader(token))).data;
   }
 }
 ```
@@ -219,10 +238,23 @@ window.addEventListener("message", (event) => {
   tokenWaiters = [];
 });
 
+const TOKEN_TIMEOUT_MS = 8000;                       // give up if the parent is silent
+
 function requestToken() {                            // post + wait for AUTH_TOKEN
   if (!canTalkToParent) return Promise.resolve(null);
-  window.parent.postMessage({ type: "REQUEST_TOKEN" }, PARENT_ORIGIN);
-  return new Promise((resolve) => tokenWaiters.push(resolve));
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (token) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      tokenWaiters = tokenWaiters.filter((w) => w !== settle);
+      resolve(token);                                // token, or null on timeout
+    };
+    const timer = setTimeout(() => settle(null), TOKEN_TIMEOUT_MS);
+    tokenWaiters.push(settle);
+    window.parent.postMessage({ type: "REQUEST_TOKEN" }, PARENT_ORIGIN);
+  });
 }
 const getToken = () => authToken ? Promise.resolve(authToken) : requestToken();
 if (canTalkToParent) requestToken();                 // warm-up on load
@@ -310,13 +342,18 @@ fresh `firebase.getIdToken()`, `targetOrigin` = that iframe's origin; (4) re-pus
       the gateway team.
 - [ ] Gate local mode to `APP_ENV=local` **and** a localhost host; keep the handshake
       inert and skip the 401-retry in local mode.
+- [ ] Give `requestToken()` a **timeout** so a missing/mismatched parent fails cleanly
+      (UI loads, backend `401`) instead of hanging; retry a `401` **only** when a Bearer
+      was actually sent.
 - [ ] Add the Dockerfile guard, `.dockerignore` (`.env`, `.env.*`), and a generic
       "Server configuration error" fallback. Never log the token.
 - [ ] Confirm the gateway verifies your tokens + allows your origin (CORS), and your host
       allows framing by the parent.
 - [ ] Test: embedded in the parent → first call carries `Bearer` → force expiry →
-      confirm one `REQUEST_TOKEN` + retry; `APP_ENV=local` → calls the backend directly
-      with `X-Api-Key`, no handshake; a production build carries **no** local key.
+      confirm one `REQUEST_TOKEN` + retry; not embedded / wrong `PARENT_ORIGIN` → **UI
+      loads and the backend returns `401` without hanging**; `APP_ENV=local` → calls the
+      backend directly with `X-Api-Key`, no handshake; a production build carries **no**
+      local key.
 
 ---
 
