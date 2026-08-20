@@ -50,8 +50,6 @@ spec:
               value: "${SCYLLA_SSL}"
             - name: SCYLLA_CA_CERT
               value: "${SCYLLA_CA_CERT}"
-            - name: CA_CERT
-              value: "${CA_CERT}"
             - name: APP_ENV
               value: "${APP_ENV}"
             - name: APP_HOST
