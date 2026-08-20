@@ -63,14 +63,16 @@ SCYLLA_PASSWORD=your_pass
 
 ### 3. SSL / TLS (optional)
 
-If your cluster requires SSL, place your CA certificate in the project root as `cert.pem`, then set in `.env`:
+If your cluster requires SSL, put the PEM-encoded CA certificate directly in `.env`:
 
 ```env
 SCYLLA_SSL=true
-SCYLLA_CA_CERT_FILE=/certs/ca.pem
+SCYLLA_CA_CERT="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
 ```
 
-`cert.pem` is copied into the image at `/certs/ca.pem` during the build — `SCYLLA_CA_CERT_FILE` is always this fixed path, do not change it. `cert.pem` is excluded from git.
+For a Kubernetes deployment, the workflow writes this value to the
+`scylla-visualizer-ca` Secret and the container receives it as
+`SCYLLA_CA_CERT` (and the compatible `CA_CERT`) environment variables.
 
 ### 4. Internal API token (required)
 
@@ -143,6 +145,7 @@ docker run -d \
   --name scyllascope \
   --env-file .env \
   -p 80:80 \
+  -p 8000:8000 \
   scyllascope
 ```
 
@@ -160,7 +163,7 @@ API docs are at [http://localhost:8000/docs](http://localhost:8000/docs).
 | `SCYLLA_USERNAME` | _(empty)_ | Authentication username |
 | `SCYLLA_PASSWORD` | _(empty)_ | Authentication password |
 | `SCYLLA_SSL` | `false` | Enable SSL/TLS |
-| `SCYLLA_CA_CERT_FILE` | _(empty)_ | Fixed as `/certs/ca.pem` when SSL is enabled — do not change |
+| `SCYLLA_CA_CERT` | _(empty)_ | PEM-encoded CA certificate content |
 | `INTERNAL_API_TOKEN` | _(empty)_ | **Required.** Shared secret for `X-API-Key` on every `/api/v1` call; container refuses to start if unset |
 | `APP_ENV` | `production` | Application environment |
 | `APP_PORT` | `8000` | Backend port (internal) |
@@ -187,7 +190,6 @@ ScyllaScope/
 │   └── nginx.conf.template
 ├── Dockerfile
 ├── docker-entrypoint.sh
-├── cert.pem                 # CA certificate — not committed to git
 ├── .env.example
 └── .dockerignore
 ```
@@ -232,4 +234,3 @@ portal before it ships.
 | `POST` | `/api/v1/query` | Execute a CQL query |
 
 Full interactive docs available at `/docs` when the container is running.
-

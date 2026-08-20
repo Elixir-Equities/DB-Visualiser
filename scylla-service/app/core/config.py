@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import List
 
@@ -12,6 +13,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
+        validate_default=True,
     )
 
     # Application
@@ -44,6 +46,14 @@ class Settings(BaseSettings):
         if upper not in allowed:
             raise ValueError(f"LOG_LEVEL must be one of {allowed}")
         return upper
+
+    @field_validator("SCYLLA_CA_CERT", mode="before")
+    @classmethod
+    def fallback_ca_cert(cls, v: str) -> str:
+        # CA_CERT supports existing Kubernetes Secrets; SCYLLA_CA_CERT is the
+        # preferred application setting. Escaped newlines keep Docker env-file
+        # usage possible while real multi-line PEM values work unchanged.
+        return (v or os.getenv("CA_CERT", "")).replace("\\n", "\n")
 
 
 @lru_cache(maxsize=1)

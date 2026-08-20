@@ -1,0 +1,100 @@
+name: Build, Push and Deploy
+on:
+  push:
+    branches: ["cb-prod", "cb-test"]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to deploy'
+        required: true
+        default: 'cb-test'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'cb-prod' && 'cb-prod' || github.ref_name == 'cb-test' && 'cb-test' || null }}
+    env:
+      BRANCH_NAME: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.branch }}
+
+      - name: Setup AWS ECR Details
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-pf-aws-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        run: |
+          export DOCKER_BUILDKIT=1
+          IMAGE_TAG=latest
+          docker build \
+            --build-arg APP_ENV=${{ vars.APP_ENV }} \
+            --build-arg PARENT_ORIGIN=${{ vars.PARENT_ORIGIN }} \
+            --build-arg MIDDLEWARE_BASE_URL=${{ vars.MIDDLEWARE_BASE_URL }} \
+            --build-arg SCYLLA_VISUALIZER_GATEWAY=${{ vars.SCYLLA_VISUALIZER_GATEWAY }} \
+            --build-arg GATEWAY_WS_URL=${{ vars.GATEWAY_WS_URL }} \
+            -t ${{ vars.ECR_REGISTRY }}/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push ${{ vars.ECR_REGISTRY }}/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG
+          IMAGE_TAG_DATE=$(date +%Y%m%d%H%M%S)
+          docker tag ${{ vars.ECR_REGISTRY }}/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG ${{ vars.ECR_REGISTRY }}/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG_DATE
+          docker push ${{ vars.ECR_REGISTRY }}/${{ vars.ECR_REPOSITORY }}:$IMAGE_TAG_DATE
+          echo "IMAGE_TAG=$IMAGE_TAG_DATE" >> $GITHUB_ENV
+          echo $IMAGE_TAG_DATE > image_tag.txt
+        env:
+          IMAGE_TAG: latest
+
+      - name: Update kube config
+        run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
+
+      - name: Render deployment.yaml
+        run: |
+          export IMAGE_TAG=$(cat image_tag.txt)
+          # Kubernetes Secret.data requires base64. This avoids placing the
+          # multi-line PEM directly in the rendered Deployment manifest.
+          export SCYLLA_CA_CERT_B64=$(printf '%s' "$SCYLLA_CA_CERT" | base64 --wrap=0)
+
+          if [ "$BRANCH_NAME" = "cb-prod" ]; then
+            export NAMESPACE="cb-prod"
+          elif [ "$BRANCH_NAME" = "cb-test" ]; then
+            export NAMESPACE="cb-test"
+          fi
+
+          envsubst < kube-dep.yaml > kube-dep-with-env.yaml
+        env:
+          APP_ENV: ${{ vars.APP_ENV }}
+          PARENT_ORIGIN: ${{ vars.PARENT_ORIGIN }}
+          MIDDLEWARE_BASE_URL: ${{ vars.MIDDLEWARE_BASE_URL }}
+          SCYLLA_VISUALIZER_GATEWAY: ${{ vars.SCYLLA_VISUALIZER_GATEWAY }}
+          GATEWAY_WS_URL: ${{ vars.GATEWAY_WS_URL }}
+          ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+          INTERNAL_API_TOKEN: ${{ secrets.INTERNAL_API_TOKEN }}
+          SCYLLA_CONTACT_POINTS: ${{ vars.SCYLLA_CONTACT_POINTS }}
+          SCYLLA_PORT: ${{ vars.SCYLLA_PORT }}
+          SCYLLA_USERNAME: ${{ secrets.SCYLLA_USERNAME }}
+          SCYLLA_PASSWORD: ${{ secrets.SCYLLA_PASSWORD }}
+          SCYLLA_SSL: ${{ vars.SCYLLA_SSL }}
+          SCYLLA_CA_CERT: ${{ secrets.SCYLLA_CA_CERT }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL }}
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f kube-dep-with-env.yaml

@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: scylla-visualizer-ca
+  namespace: ${NAMESPACE}
+type: Opaque
+data:
+  # Both names are retained for applications that read either setting.
+  SCYLLA_CA_CERT: ${SCYLLA_CA_CERT_B64}
+  CA_CERT: ${SCYLLA_CA_CERT_B64}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scylla-visualizer-service
+  namespace: ${NAMESPACE}
+  labels:
+    app: scylla-visualizer-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scylla-visualizer-service
+  template:
+    metadata:
+      labels:
+        app: scylla-visualizer-service
+    spec:
+      containers:
+        - name: scylla-visualizer-service
+          image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+            - containerPort: 8000
+              name: backend
+          env:
+            - name: INTERNAL_API_TOKEN
+              value: "${INTERNAL_API_TOKEN}"
+            - name: SCYLLA_CONTACT_POINTS
+              value: "${SCYLLA_CONTACT_POINTS}"
+            - name: SCYLLA_PORT
+              value: "${SCYLLA_PORT}"
+            - name: SCYLLA_USERNAME
+              value: "${SCYLLA_USERNAME}"
+            - name: SCYLLA_PASSWORD
+              value: "${SCYLLA_PASSWORD}"
+            - name: SCYLLA_SSL
+              value: "${SCYLLA_SSL}"
+            - name: SCYLLA_CA_CERT
+              value: "${SCYLLA_CA_CERT}"
+            - name: CA_CERT
+              value: "${CA_CERT}"
+            - name: APP_ENV
+              value: "${APP_ENV}"
+            - name: APP_HOST
+              value: "0.0.0.0"
+            - name: APP_PORT
+              value: "8000"
+            - name: LOG_LEVEL
+              value: "${LOG_LEVEL}"
+            - name: BACKEND_URL
+              value: "${BACKEND_URL}"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1024Mi"
+              cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scylla-visualizer-service
+  namespace: ${NAMESPACE}
+  labels:
+    app: scylla-visualizer-service
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: backend
+      port: 8000
+      targetPort: 8000
+  selector:
+    app: scylla-visualizer-service
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: scylla-visualizer-hpa
+  namespace: ${NAMESPACE}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: scylla-visualizer-service
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 85
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: scylla-visualizer-pdb
+  namespace: ${NAMESPACE}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: scylla-visualizer-service

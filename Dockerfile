@@ -58,9 +58,6 @@ COPY scylla-fe/nginx.conf.template /etc/nginx/templates/default.conf.template
 # Remove debian's default nginx site
 RUN rm -f /etc/nginx/sites-enabled/default
 
-# ── TLS certificate (optional — only copied if present in build context) ──────
-COPY cert.pem /certs/ca.pem
-
 # ── Startup script ────────────────────────────────────────────────────────────
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
