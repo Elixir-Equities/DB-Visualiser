@@ -92,7 +92,7 @@ jobs:
           SCYLLA_PASSWORD: ${{ secrets.SCYLLA_PASSWORD }}
           SCYLLA_SSL: ${{ vars.SCYLLA_SSL }}
           SCYLLA_CA_CERT: ${{ secrets.SCYLLA_CA_CERT }}
-          PFR_MASKED_KEYSPACES: ${{ vars.PFR_MASKED_KEYSPACES || 'pfr_aa_integration' }}
+          PFR_MASKED_KEYSPACES: ${{ vars.PFR_MASKED_KEYSPACES }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL }}
           BACKEND_URL: ${{ vars.BACKEND_URL }}
 

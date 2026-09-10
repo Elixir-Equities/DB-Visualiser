@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from functools import lru_cache
 from typing import FrozenSet, List
 
-from pydantic import field_validator
+from pydantic import ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,7 +38,7 @@ class Settings(BaseSettings):
 
     # Comma-separated physical keyspace names that share the PFR masking policy.
     # Deployment environments can map different test/prod names to one policy.
-    PFR_MASKED_KEYSPACES: str = "pfr_aa_integration"
+    PFR_MASKED_KEYSPACES: str
 
     @property
     def scylla_contact_points_list(self) -> List[str]:
@@ -89,4 +90,15 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as exc:
+        if any(
+            error["loc"] == ("PFR_MASKED_KEYSPACES",)
+            and error["type"] == "missing"
+            for error in exc.errors()
+        ):
+            logging.getLogger(__name__).critical(
+                "PFR_MASKED_KEYSPACES is not configured; refusing to start"
+            )
+        raise
