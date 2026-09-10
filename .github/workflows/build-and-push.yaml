@@ -12,9 +12,9 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name == 'cb-prod' && 'cb-prod' || github.ref_name == 'cb-test' && 'cb-test' || null }}
+    environment: ${{ (github.event_name == 'push' && github.ref_name || github.event.inputs.branch) == 'cb-prod' && 'cb-prod' || (github.event_name == 'push' && github.ref_name || github.event.inputs.branch) == 'cb-test' && 'cb-test' || null }}
     env:
-      BRANCH_NAME: ${{ github.ref_name }}
+      BRANCH_NAME: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.branch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -92,6 +92,7 @@ jobs:
           SCYLLA_PASSWORD: ${{ secrets.SCYLLA_PASSWORD }}
           SCYLLA_SSL: ${{ vars.SCYLLA_SSL }}
           SCYLLA_CA_CERT: ${{ secrets.SCYLLA_CA_CERT }}
+          PFR_MASKED_KEYSPACES: ${{ vars.PFR_MASKED_KEYSPACES || 'pfr_aa_integration' }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL }}
           BACKEND_URL: ${{ vars.BACKEND_URL }}
 
