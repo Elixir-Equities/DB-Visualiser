@@ -50,6 +50,8 @@ spec:
               value: "${SCYLLA_SSL}"
             - name: SCYLLA_CA_CERT
               value: "${SCYLLA_CA_CERT}"
+            - name: PFR_MASKED_KEYSPACES
+              value: "${PFR_MASKED_KEYSPACES}"
             - name: APP_ENV
               value: "${APP_ENV}"
             - name: APP_HOST
