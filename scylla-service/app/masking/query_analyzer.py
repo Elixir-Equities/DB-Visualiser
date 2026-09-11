@@ -1,8 +1,8 @@
-"""Conservative CQL analysis for keyspaces protected by response masking.
+"""Conservative CQL analysis for sources protected by response masking.
 
 The analyzer deliberately supports a small, lineage-preserving SELECT subset.
-If a PFR query cannot be proven safe, it is rejected before it reaches Scylla.
-Queries for other keyspaces are returned to the existing flow unchanged.
+If a protected query cannot be proven safe, it is rejected before it reaches
+Scylla. Queries for other sources are returned to the existing flow unchanged.
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 from app.masking.policy import TableMaskingPolicy
-from app.masking.registry import get_table_policy, is_protected_keyspace
+from app.masking.registry import (
+    get_table_policy,
+    is_protected_keyspace,
+    is_protected_source,
+)
 
 _NUMBER_RE = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 _IDENTIFIER_START_RE = re.compile(r"[A-Za-z_]")
@@ -152,12 +156,14 @@ def _strip_trailing_semicolon(tokens: Sequence[_Token]) -> List[_Token]:
 
 
 def _qualified_keyspace_reference(tokens: Sequence[_Token]) -> bool:
-    for index, token in enumerate(tokens[:-1]):
+    for index, token in enumerate(tokens[:-2]):
         identifier = _identifier(token)
+        table = _identifier(tokens[index + 2])
         if (
             identifier is not None
-            and is_protected_keyspace(identifier)
             and tokens[index + 1].value == "."
+            and table is not None
+            and is_protected_source(identifier, table)
         ):
             return True
     if len(tokens) >= 2 and tokens[0].keyword == "use":
@@ -385,7 +391,7 @@ def _shape_fingerprint(tokens: Sequence[_Token]) -> str:
 
 
 def analyze_protected_query(query: str) -> Optional[ProtectedQuery]:
-    """Return masking context for a PFR query, or ``None`` for other keyspaces."""
+    """Return masking context for a protected source, otherwise ``None``."""
     raw_tokens = _tokenize(query)
     if not raw_tokens or not _qualified_keyspace_reference(raw_tokens):
         return None
@@ -402,10 +408,12 @@ def analyze_protected_query(query: str) -> Optional[ProtectedQuery]:
     table = _identifier(tokens[from_index + 3])
     if (
         keyspace is None
-        or not is_protected_keyspace(keyspace)
         or tokens[from_index + 2].value != "."
         or table is None
     ):
+        _unsafe()
+
+    if not is_protected_source(keyspace, table):
         _unsafe()
 
     policy = get_table_policy(keyspace, table)
