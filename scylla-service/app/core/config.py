@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # Deployment environments can map different test/prod names to one policy.
     PFR_MASKED_KEYSPACES: str
 
+    # Exact physical keyspace/table pair containing chat message fields.
+    CH_MASKED_KEYSPACE: str
+    CH_MASKED_TABLE: str
+
     @property
     def scylla_contact_points_list(self) -> List[str]:
         return [h.strip() for h in self.SCYLLA_CONTACT_POINTS.split(",") if h.strip()]
@@ -69,6 +73,24 @@ class Settings(BaseSettings):
         if len(normalized) != len(set(normalized)):
             raise ValueError("PFR_MASKED_KEYSPACES contains duplicate keyspaces")
         return ",".join(names)
+
+    @field_validator("CH_MASKED_KEYSPACE", "CH_MASKED_TABLE")
+    @classmethod
+    def validate_ch_masked_identifier(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("CH masking identifiers cannot be empty")
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", name) is None:
+            raise ValueError("CH masking identifiers must be valid Scylla identifiers")
+        return name
+
+    @property
+    def ch_masked_keyspace(self) -> str:
+        return self.CH_MASKED_KEYSPACE.casefold()
+
+    @property
+    def ch_masked_table(self) -> str:
+        return self.CH_MASKED_TABLE.casefold()
 
     @field_validator("LOG_LEVEL")
     @classmethod
@@ -100,5 +122,18 @@ def get_settings() -> Settings:
         ):
             logging.getLogger(__name__).critical(
                 "PFR_MASKED_KEYSPACES is not configured; refusing to start"
+            )
+        missing_ch_settings = [
+            setting
+            for setting in ("CH_MASKED_KEYSPACE", "CH_MASKED_TABLE")
+            if any(
+                error["loc"] == (setting,) and error["type"] == "missing"
+                for error in exc.errors()
+            )
+        ]
+        if missing_ch_settings:
+            logging.getLogger(__name__).critical(
+                "%s is not configured; refusing to start",
+                ", ".join(missing_ch_settings),
             )
         raise

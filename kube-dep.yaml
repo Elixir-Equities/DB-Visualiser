@@ -52,6 +52,10 @@ spec:
               value: "${SCYLLA_CA_CERT}"
             - name: PFR_MASKED_KEYSPACES
               value: "${PFR_MASKED_KEYSPACES}"
+            - name: CH_MASKED_KEYSPACE
+              value: "${CH_MASKED_KEYSPACE}"
+            - name: CH_MASKED_TABLE
+              value: "${CH_MASKED_TABLE}"
             - name: APP_ENV
               value: "${APP_ENV}"
             - name: APP_HOST
