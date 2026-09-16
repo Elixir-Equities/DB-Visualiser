@@ -3,6 +3,9 @@ import { runQuery } from '../services/api.js'
 
 const AppContext = createContext(null)
 
+// Rows per request when exporting all pages (backend PAGE_SIZE_MAX is 5000)
+const EXPORT_PAGE_SIZE = 5000
+
 export function AppProvider({ children }) {
   // Selection
   const [selectedKeyspace, setSelectedKeyspace] = useState(null)
@@ -101,7 +104,7 @@ export function AppProvider({ children }) {
     const allRows = pageCache.flatMap((entry) => entry.data.rows)
     let token = pageCache[pageCache.length - 1].nextToken
     while (token) {
-      const data = await runQuery(query, { pagingState: token })
+      const data = await runQuery(query, { pageSize: EXPORT_PAGE_SIZE, pagingState: token })
       allRows.push(...data.rows)
       token = data.paging_state ?? null
     }
