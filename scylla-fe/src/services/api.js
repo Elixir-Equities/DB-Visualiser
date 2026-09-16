@@ -125,6 +125,13 @@ export function exportQueryCSV(query) {
     }
 
     iframe.addEventListener('load', () => {
+      // Chrome fires load for the iframe's initial about:blank as soon as it is
+      // attached — that is not a response, so ignore it or we would tear down
+      // the form before it submits.
+      try {
+        if (iframe.contentWindow?.location.href === 'about:blank') return
+      } catch { /* cross-origin document — treat as an error response below */ }
+
       let message = 'Export failed'
       try {
         const body = JSON.parse(iframe.contentDocument?.body?.textContent ?? '')
