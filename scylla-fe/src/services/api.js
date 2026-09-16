@@ -88,3 +88,61 @@ export async function runQuery(query, { pageSize = 50, pagingState = null } = {}
     paging_state: pagingState,
   })
 }
+
+/**
+ * POST /query/export — streams the full result set as a CSV download.
+ *
+ * Submitted as a form into a hidden iframe instead of fetch(), so the browser
+ * saves the response to disk as it arrives rather than holding it in memory.
+ * On success the iframe never loads (the response is an attachment); if the
+ * server returns a JSON error instead, the iframe loads it and we reject.
+ *
+ * @param {string} query CQL SELECT statement
+ * @returns {Promise<void>} resolves once the download has been handed to the browser
+ */
+export function exportQueryCSV(query) {
+  return new Promise((resolve, reject) => {
+    const name = `csv-export-${Date.now()}`
+    const iframe = document.createElement('iframe')
+    iframe.name = name
+    iframe.hidden = true
+
+    const form = document.createElement('form')
+    form.method = 'POST'
+    form.action = `${BASE_URL}/query/export`
+    form.target = name
+    form.hidden = true
+    const input = document.createElement('input')
+    input.type = 'hidden'
+    input.name = 'query'
+    input.value = query
+    form.appendChild(input)
+
+    const cleanup = () => {
+      clearTimeout(timer)
+      form.remove()
+      iframe.remove()
+    }
+
+    iframe.addEventListener('load', () => {
+      let message = 'Export failed'
+      try {
+        const body = JSON.parse(iframe.contentDocument?.body?.textContent ?? '')
+        message = body?.error?.message ?? message
+      } catch { /* non-JSON error page */ }
+      cleanup()
+      reject(new Error(message))
+    })
+
+    // No load event means the download started. Keep the iframe around long
+    // enough for the first page to come back before assuming success; removing
+    // it later does not cancel a download the browser has already taken over.
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, 15000)
+
+    document.body.append(iframe, form)
+    form.submit()
+  })
+}

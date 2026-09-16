@@ -1,10 +1,7 @@
 import { createContext, useContext, useState } from 'react'
-import { runQuery } from '../services/api.js'
+import { exportQueryCSV, runQuery } from '../services/api.js'
 
 const AppContext = createContext(null)
-
-// Rows per request when exporting all pages (backend PAGE_SIZE_MAX is 5000)
-const EXPORT_PAGE_SIZE = 5000
 
 export function AppProvider({ children }) {
   // Selection
@@ -97,18 +94,10 @@ export function AppProvider({ children }) {
     setQueryError(null)
   }
 
-  // Collect every row across all pages — uses cache first, then fetches remaining pages
-  async function fetchAllRows() {
-    if (!query.trim() || pageCache.length === 0) return null
-    const columns = pageCache[0].data.columns
-    const allRows = pageCache.flatMap((entry) => entry.data.rows)
-    let token = pageCache[pageCache.length - 1].nextToken
-    while (token) {
-      const data = await runQuery(query, { pageSize: EXPORT_PAGE_SIZE, pagingState: token })
-      allRows.push(...data.rows)
-      token = data.paging_state ?? null
-    }
-    return { columns, rows: allRows }
+  // Stream every row as CSV from the server — the browser writes it straight to disk
+  function exportAll() {
+    if (!query.trim()) return Promise.resolve()
+    return exportQueryCSV(query)
   }
 
   // ── Core fetch ────────────────────────────────────────────────────────────────
@@ -147,7 +136,7 @@ export function AppProvider({ children }) {
         result, queryLoading, queryError,
         // Pagination
         pagingState, currentPage, totalLabel, canPrev, canNext,
-        execute, nextPage, prevPage, reset, fetchAllRows,
+        execute, nextPage, prevPage, reset, exportAll,
       }}
     >
       {children}

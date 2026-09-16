@@ -212,6 +212,26 @@ Execute a CQL `SELECT` query and receive results as columns + rows.
 }
 ```
 
+#### `POST /query/export`
+
+Stream the **entire** result of a CQL `SELECT` as a CSV file download. Rows are fetched from ScyllaDB 5,000 at a time and written to the response as they arrive, so memory use stays flat regardless of table size.
+
+**Request body** — `application/x-www-form-urlencoded` (a plain HTML form post, so the browser can save the stream straight to disk)
+```
+query=SELECT * FROM my_keyspace.users
+```
+
+**Success** — HTTP 200, `Content-Type: text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="query-export-YYYYMMDD-HHMMSS.csv"`
+
+```csv
+id,email
+a1b2c3d4-...,alice@example.com
+```
+
+Collections are written as JSON, blobs as `0x…` hex, timestamps as ISO-8601, `null` as an empty cell.
+
+Errors before the first page is returned (blocked statement, bad syntax, first-page timeout) use the standard JSON error envelope with the same codes as `POST /query` (`422` if `query` is empty). A failure *after* streaming has begun aborts the connection, and the browser marks the download as failed.
+
 ---
 
 ## Suggested Frontend Helper
