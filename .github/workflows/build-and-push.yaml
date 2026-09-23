@@ -100,4 +100,8 @@ jobs:
 
       - name: Deploy to EKS
         run: |
+          # Parse the whole file before touching the cluster. kubectl applies
+          # documents as it reads them, so a syntax error part-way down leaves
+          # the namespace half-updated with the rest of the manifest skipped.
+          kubectl apply --dry-run=client -f kube-dep-with-env.yaml > /dev/null
           kubectl apply -f kube-dep-with-env.yaml

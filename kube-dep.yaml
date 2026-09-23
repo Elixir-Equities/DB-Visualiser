@@ -49,7 +49,10 @@ spec:
             - name: SCYLLA_SSL
               value: "${SCYLLA_SSL}"
             - name: SCYLLA_CA_CERT
-              value: "${SCYLLA_CA_CERT}"
+              valueFrom:
+                secretKeyRef:
+                  name: scylla-ca
+                  key: CA_CERT
             - name: PFR_MASKED_KEYSPACES
               value: "${PFR_MASKED_KEYSPACES}"
             - name: CH_MASKED_KEYSPACE
