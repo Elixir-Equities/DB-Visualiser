@@ -66,7 +66,7 @@ jobs:
           export IMAGE_TAG=$(cat image_tag.txt)
           # Kubernetes Secret.data requires base64. This avoids placing the
           # multi-line PEM directly in the rendered Deployment manifest.
-          export SCYLLA_CA_CERT_B64=$(printf '%s' "$SCYLLA_CA_CERT" | base64 --wrap=0)
+          export CA_CERT_B64=$(printf '%s' "$CA_CERT" | base64 --wrap=0)
 
           if [ "$BRANCH_NAME" = "cb-prod" ]; then
             export NAMESPACE="cb-prod"
@@ -91,7 +91,7 @@ jobs:
           SCYLLA_USERNAME: ${{ secrets.SCYLLA_USERNAME }}
           SCYLLA_PASSWORD: ${{ secrets.SCYLLA_PASSWORD }}
           SCYLLA_SSL: ${{ vars.SCYLLA_SSL }}
-          SCYLLA_CA_CERT: ${{ secrets.SCYLLA_CA_CERT }}
+          CA_CERT: ${{ secrets.CA_CERT }}
           PFR_MASKED_KEYSPACES: ${{ vars.PFR_MASKED_KEYSPACES }}
           CH_MASKED_KEYSPACE: ${{ vars.CH_MASKED_KEYSPACE }}
           CH_MASKED_TABLE: ${{ vars.CH_MASKED_TABLE }}

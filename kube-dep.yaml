@@ -5,9 +5,7 @@ metadata:
   namespace: ${NAMESPACE}
 type: Opaque
 data:
-  # Both names are retained for applications that read either setting.
-  SCYLLA_CA_CERT: ${SCYLLA_CA_CERT_B64}
-  CA_CERT: ${SCYLLA_CA_CERT_B64}
+  CA_CERT: ${CA_CERT_B64}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -48,7 +46,7 @@ spec:
               value: "${SCYLLA_PASSWORD}"
             - name: SCYLLA_SSL
               value: "${SCYLLA_SSL}"
-            - name: SCYLLA_CA_CERT
+            - name: CA_CERT
               valueFrom:
                 secretKeyRef:
                   name: scylla-ca

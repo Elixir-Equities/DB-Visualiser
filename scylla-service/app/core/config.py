@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from functools import lru_cache
 from typing import FrozenSet, List
@@ -34,7 +33,7 @@ class Settings(BaseSettings):
     SCYLLA_USERNAME: str = ""
     SCYLLA_PASSWORD: str = ""
     SCYLLA_SSL: bool = False
-    SCYLLA_CA_CERT: str = ""  # PEM-encoded CA certificate content
+    CA_CERT: str = ""  # PEM-encoded CA certificate content
 
     # Comma-separated physical keyspace names that share the PFR masking policy.
     # Deployment environments can map different test/prod names to one policy.
@@ -101,13 +100,12 @@ class Settings(BaseSettings):
             raise ValueError(f"LOG_LEVEL must be one of {allowed}")
         return upper
 
-    @field_validator("SCYLLA_CA_CERT", mode="before")
+    @field_validator("CA_CERT", mode="before")
     @classmethod
-    def fallback_ca_cert(cls, v: str) -> str:
-        # CA_CERT supports existing Kubernetes Secrets; SCYLLA_CA_CERT is the
-        # preferred application setting. Escaped newlines keep Docker env-file
-        # usage possible while real multi-line PEM values work unchanged.
-        return (v or os.getenv("CA_CERT", "")).replace("\\n", "\n")
+    def unescape_ca_cert(cls, v: str) -> str:
+        # Escaped newlines keep Docker env-file usage possible while real
+        # multi-line PEM values (Kubernetes Secrets) work unchanged.
+        return (v or "").replace("\\n", "\n")
 
 
 @lru_cache(maxsize=1)
