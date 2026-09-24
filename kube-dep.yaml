@@ -59,6 +59,10 @@ spec:
               value: "${CH_MASKED_TABLE}"
             - name: APP_ENV
               value: "${APP_ENV}"
+            # Read by nginx at startup for the CSP frame-ancestors header.
+            # The frontend's own copy is baked in at image build time.
+            - name: PARENT_ORIGIN
+              value: "${PARENT_ORIGIN}"
             - name: APP_HOST
               value: "0.0.0.0"
             - name: APP_PORT

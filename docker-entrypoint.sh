@@ -1,10 +1,17 @@
 #!/bin/bash
 set -e
 
+# An empty PARENT_ORIGIN would render "frame-ancestors " — a malformed value
+# that blocks every framer, including the portal. Fail loudly instead.
+if [ -z "${PARENT_ORIGIN:-}" ]; then
+    echo "ERROR: PARENT_ORIGIN is not set. It is the only origin allowed to iframe this app." >&2
+    exit 1
+fi
+
 # Render nginx config from template — only substitutes the vars named here,
 # leaving nginx's own $variables (like $host, $remote_addr) untouched.
 # nginx serves static files only; backend calls go browser -> gateway -> backend.
-envsubst '${BACKEND_URL}' \
+envsubst '${BACKEND_URL} ${PARENT_ORIGIN}' \
     < /etc/nginx/templates/default.conf.template \
     > /etc/nginx/conf.d/default.conf
 
