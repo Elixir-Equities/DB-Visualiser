@@ -19,6 +19,11 @@ from app.masking.registry import (
     is_protected_source,
 )
 
+_UUID_RE = re.compile(
+    r"(?<![A-Za-z0-9_$])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}(?![A-Za-z0-9_$])",
+    re.IGNORECASE,
+)
 _NUMBER_RE = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 _IDENTIFIER_START_RE = re.compile(r"[A-Za-z_]")
 _IDENTIFIER_PART_RE = re.compile(r"[A-Za-z0-9_$]")
@@ -110,6 +115,14 @@ def _tokenize(query: str) -> List[_Token]:
                 break
             else:
                 _unsafe()
+            continue
+
+        # UUIDs can start with a digit or a letter, so recognize them before
+        # numbers and identifiers. As with strings, discard the literal value.
+        uuid = _UUID_RE.match(query, i)
+        if uuid:
+            tokens.append(_Token("UUID", ""))
+            i = uuid.end()
             continue
 
         number = _NUMBER_RE.match(query, i)
@@ -379,8 +392,8 @@ def _shape_fingerprint(tokens: Sequence[_Token]) -> str:
     """Fingerprint query structure without making literals dictionary-attackable."""
     shape = []
     for token in tokens:
-        if token.kind == "STRING":
-            shape.append("STRING:?")
+        if token.kind in {"STRING", "UUID"}:
+            shape.append(f"{token.kind}:?")
         elif token.kind == "NUMBER":
             shape.append("NUMBER:#")
         elif token.kind == "IDENT":
