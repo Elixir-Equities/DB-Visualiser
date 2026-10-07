@@ -2,10 +2,15 @@
 .git
 .gitignore
 
-# Env files — never bake secrets into the image
+# Env files — never bake secrets into the image.
+# The ** forms matter: a bare `.env` pattern only matches the context root,
+# which would let scylla-service/.env (cert + credentials) into the image.
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.example
+!**/.env.example
 
 # Python
 scylla-service/.venv

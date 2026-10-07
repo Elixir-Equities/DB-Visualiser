@@ -3,9 +3,8 @@ Server-side CSV export.
 
 The first page is fetched up front so that validation, syntax and timeout
 errors still come back as a normal JSON error response. After that the rows
-are streamed to the client page by page — the driver fetches the next page as
-the ResultSet is iterated, so memory use stays at roughly one page no matter
-how large the table is.
+are streamed to the client page by page. Protected queries use the same
+analysis, masking and safe diagnostics as the normal query endpoint.
 """
 from __future__ import annotations
 
@@ -22,6 +21,15 @@ from fastapi import HTTPException
 
 from app.core.logging import get_logger
 from app.db.session import get_session
+from app.masking import ProtectedQueryError, analyze_protected_query, mask_rows
+from app.masking.audit import (
+    log_masking_error,
+    log_query_done,
+    log_query_error,
+    log_query_execute,
+    log_query_timeout,
+    log_scylla_timeout,
+)
 from app.services.query_service import QUERY_TIMEOUT
 from app.services.query_validator import validate_and_prepare
 
@@ -60,7 +68,12 @@ def _jsonable(value: Any) -> Any:
 async def start_csv_export(raw_query: str) -> Iterator[bytes]:
     """Run the first page and return a generator that streams the CSV."""
     query = validate_and_prepare(raw_query)
-    logger.info("export_start | fetch_size=%d query=%r", EXPORT_FETCH_SIZE, query)
+    try:
+        protected_query = analyze_protected_query(query)
+    except ProtectedQueryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    log_query_execute(logger, protected_query, query, EXPORT_FETCH_SIZE, False)
 
     session = get_session()
     stmt = SimpleStatement(query, fetch_size=EXPORT_FETCH_SIZE)
@@ -75,40 +88,69 @@ async def start_csv_export(raw_query: str) -> Iterator[bytes]:
             timeout=QUERY_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        logger.warning("export_timeout | after=%.1fs query=%r", QUERY_TIMEOUT, query)
+        log_query_timeout(logger, protected_query, query, QUERY_TIMEOUT)
         raise HTTPException(
             status_code=504,
             detail=f"Query timed out after {QUERY_TIMEOUT}s",
         )
     except (OperationTimedOut, ReadTimeout) as exc:
-        logger.warning("scylladb_timeout | error=%s query=%r", exc, query)
+        log_scylla_timeout(logger, protected_query, query, exc)
         raise HTTPException(status_code=504, detail="ScyllaDB operation timed out")
     except Exception as exc:
-        logger.error("export_error | error=%s query=%r", exc, query)
-        raise HTTPException(status_code=500, detail=f"Query execution error: {exc}")
+        log_query_error(logger, protected_query, query, exc)
+        detail = "Query execution error" if protected_query else f"Query execution error: {exc}"
+        raise HTTPException(status_code=500, detail=detail) from exc
 
     columns: List[str] = list(result.column_names or [])
 
+    def prepare_page(rows: Any) -> List[List[str]]:
+        if not protected_query:
+            return [[_to_cell(value) for value in row] for row in rows]
+        try:
+            masked = mask_rows(
+                (dict(row._asdict()) for row in rows), protected_query.policy,
+            )
+            return [[_to_cell(row[column]) for column in columns] for row in masked]
+        except Exception as exc:
+            log_masking_error(logger, protected_query, exc)
+            raise HTTPException(
+                status_code=500, detail="Unable to safely mask query results",
+            ) from exc
+
+    # Mask the entire first page before returning response headers. This also
+    # keeps row-conversion failures on the standard JSON error path.
+    first_page = await loop.run_in_executor(None, prepare_page, result.current_rows)
+
     def generate() -> Iterator[bytes]:
+        nonlocal first_page
         buf = io.StringIO()
         writer = csv.writer(buf, lineterminator="\n")
         writer.writerow(columns)
         row_count = 0
         try:
-            # Iterating the ResultSet transparently fetches the following pages
-            for row in result:
-                writer.writerow([_to_cell(v) for v in row])
-                row_count += 1
-                if row_count % FLUSH_EVERY_ROWS == 0:
-                    yield buf.getvalue().encode("utf-8")
-                    buf.seek(0)
-                    buf.truncate(0)
+            page = first_page
+            first_page = []
+            while True:
+                for cells in page:
+                    writer.writerow(cells)
+                    row_count += 1
+                    if row_count % FLUSH_EVERY_ROWS == 0:
+                        yield buf.getvalue().encode("utf-8")
+                        buf.seek(0)
+                        buf.truncate(0)
+                if not result.has_more_pages:
+                    break
+                # The sync response iterator runs in Starlette's thread pool.
+                # Discard the previous page before fetching/masking the next.
+                del page
+                result.fetch_next_page()
+                page = prepare_page(result.current_rows)
             yield buf.getvalue().encode("utf-8")
         except Exception as exc:
             # Headers are already sent, so the only signal left is to abort the
             # connection — the browser then marks the download as failed.
-            logger.error("export_aborted | rows=%d error=%s query=%r", row_count, exc, query)
+            log_query_error(logger, protected_query, query, exc)
             raise
-        logger.info("export_done | rows=%d query=%r", row_count, query)
+        log_query_done(logger, protected_query, row_count, False)
 
     return generate()

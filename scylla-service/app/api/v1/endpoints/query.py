@@ -35,10 +35,11 @@ async def export_query_csv(request: Request) -> StreamingResponse:
     filename = f"query-export-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
     return StreamingResponse(
         stream,
-        media_type="text/csv; charset=utf-8",
+        media_type="text/csv",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             # Tell nginx not to buffer, so rows reach the browser as they are produced
             "X-Accel-Buffering": "no",
+            "Cache-Control": "no-store",
         },
     )

@@ -65,9 +65,9 @@ def init_session() -> None:
 
     ssl_context = None
     if settings.SCYLLA_SSL:
-        if not settings.SCYLLA_CA_CERT:
-            raise ValueError("SCYLLA_SSL is enabled but SCYLLA_CA_CERT is not set")
-        ssl_context = _build_ssl_context(settings.SCYLLA_CA_CERT)
+        if not settings.CA_CERT:
+            raise ValueError("SCYLLA_SSL is enabled but CA_CERT is not set")
+        ssl_context = _build_ssl_context(settings.CA_CERT)
 
     try:
         _cluster = Cluster(

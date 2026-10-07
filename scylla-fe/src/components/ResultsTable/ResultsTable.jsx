@@ -197,6 +197,10 @@ function ErrorState({ error }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+// Shared instance so the "no result yet" case (initial load, or after a failed
+// query) hands hooks the same array every render instead of a fresh one.
+const NO_COLUMNS = []
+
 export default function ResultsTable() {
   const { result, queryError, queryLoading, currentPage, totalLabel, exportAll } = useAppContext()
   const { copied, copy } = useCopyCell()
@@ -220,7 +224,7 @@ export default function ResultsTable() {
     }
   }
 
-  const columns = result?.columns ?? []
+  const columns = result?.columns ?? NO_COLUMNS
   const { getWidth, startResize } = useColumnResize(columns)
 
   if (queryLoading) return <LoadingSkeleton />
@@ -271,7 +275,7 @@ export default function ResultsTable() {
             title="Export all rows to CSV"
           >
             {exporting ? <SpinIcon /> : <DownloadIcon />}
-            <span>{exporting ? 'Starting export…' : 'Export all'}</span>
+            <span>{exporting ? 'Exporting…' : 'Export all'}</span>
           </button>
         </div>
       </div>
