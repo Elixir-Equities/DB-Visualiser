@@ -202,9 +202,10 @@ function ErrorState({ error }) {
 const NO_COLUMNS = []
 
 export default function ResultsTable() {
-  const { result, queryError, queryLoading, currentPage, totalLabel, fetchAllRows } = useAppContext()
+  const { result, queryError, queryLoading, currentPage, totalLabel, exportAll } = useAppContext()
   const { copied, copy } = useCopyCell()
   const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState(null)
 
   function handleExportPage() {
     if (!result) return
@@ -213,9 +214,11 @@ export default function ResultsTable() {
 
   async function handleExportAll() {
     setExporting(true)
+    setExportError(null)
     try {
-      const data = await fetchAllRows()
-      if (data) triggerDownload('query-all-rows.csv', toCSV(data.columns, data.rows))
+      await exportAll()
+    } catch (e) {
+      setExportError(e.message)
     } finally {
       setExporting(false)
     }
@@ -251,6 +254,11 @@ export default function ResultsTable() {
           {totalLabel ? `page ${currentPage} of ${totalLabel}` : `page ${currentPage}`}
         </span>
         <div className="ml-auto flex items-center gap-3">
+          {exportError && (
+            <span className="text-red-400 truncate max-w-xs" title={exportError}>
+              Export failed: {exportError}
+            </span>
+          )}
           <span className="text-gray-700">drag edges to resize</span>
           <button
             onClick={handleExportPage}

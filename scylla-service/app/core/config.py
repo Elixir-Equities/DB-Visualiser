@@ -5,7 +5,7 @@ import re
 from functools import lru_cache
 from typing import FrozenSet, List
 
-from pydantic import ValidationError, field_validator
+from pydantic import AliasChoices, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +15,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         validate_default=True,
+        extra="ignore",
     )
 
     # Application
@@ -33,7 +34,7 @@ class Settings(BaseSettings):
     SCYLLA_USERNAME: str = ""
     SCYLLA_PASSWORD: str = ""
     SCYLLA_SSL: bool = False
-    CA_CERT: str = ""  # PEM-encoded CA certificate content
+    CA_CERT: str = Field(default="", validation_alias=AliasChoices("CA_CERT", "SCYLLA_CA_CERT"))
 
     # Comma-separated physical keyspace names that share the PFR masking policy.
     # Deployment environments can map different test/prod names to one policy.

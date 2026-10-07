@@ -2,8 +2,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-PAGE_SIZE_DEFAULT = 50
-PAGE_SIZE_MAX = 200
+PAGE_SIZE_DEFAULT = 5000
+PAGE_SIZE_MAX = 5000
 
 
 class QueryRequest(BaseModel):

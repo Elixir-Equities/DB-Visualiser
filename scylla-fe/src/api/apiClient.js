@@ -129,17 +129,10 @@ async function authHeader(token) {
  * @param {object} [opts] axios options (method, params, data, headers)
  * @returns {Promise<any>} the response body
  */
-export async function apiRequest(path, opts = {}) {
-  const send = (auth) =>
-    axios({
-      url: `${CH_BASE_URL}${path}`,
-      ...opts,
-      headers: { 'Content-Type': 'application/json', ...opts.headers, ...auth },
-    })
-
+async function withAuthRetry(send) {
   const auth = await authHeader()
   try {
-    return (await send(auth)).data
+    return await send(auth)
   } catch (err) {
     // Only a token we actually SENT can be "expired" and worth refreshing. With
     // no Bearer (standalone / wrong parent) the 401 is terminal — don't loop.
@@ -153,8 +146,33 @@ export async function apiRequest(path, opts = {}) {
     }
     const token = await requestToken() // fresh token, or null on timeout
     if (!token) throw err
-    return (await send(await authHeader(token))).data
+    return await send(await authHeader(token))
   }
+}
+
+export async function apiRequest(path, opts = {}) {
+  return withAuthRetry(async (auth) => (await axios({
+    url: `${CH_BASE_URL}${path}`,
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...opts.headers, ...auth },
+  })).data)
+}
+
+/** Authenticated fetch for downloads; leaves the successful body as a stream. */
+export async function apiStreamRequest(path, opts = {}) {
+  return withAuthRetry(async (auth) => {
+    const response = await fetch(`${CH_BASE_URL}${path}`, {
+      ...opts,
+      headers: { ...opts.headers, ...auth },
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => null)
+      const error = new Error(data?.error?.message ?? `Request failed (${response.status})`)
+      error.response = { status: response.status, data }
+      throw error
+    }
+    return response
+  })
 }
 
 // ─── WebSockets (§7b) ────────────────────────────────────────────────────────
