@@ -14,6 +14,19 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
+    # Always load the current entry point and download worker after deployment.
+    # Hashed JS/CSS assets remain independently cacheable.
+    location = /index.html {
+        add_header Cache-Control "no-store" always;
+        add_header Content-Security-Policy "frame-ancestors ${PARENT_ORIGIN}" always;
+    }
+
+    location = /csv-download-worker.js {
+        try_files $uri =404;
+        add_header Cache-Control "no-store" always;
+        add_header Content-Security-Policy "frame-ancestors ${PARENT_ORIGIN}" always;
+    }
+
     # Port 80 is the only published port (see the README run command), so the
     # middleware gateway reaches the backend through here. Requests arrive
     # server-to-server from the gateway, already carrying the X-API-Key it

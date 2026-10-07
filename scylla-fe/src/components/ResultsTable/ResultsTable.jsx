@@ -2,27 +2,6 @@ import { useCallback, useRef, useState } from 'react'
 import { useAppContext } from '../../context/AppContext.jsx'
 import { useColumnResize } from '../../hooks/useColumnResize.js'
 
-// ─── CSV helpers ──────────────────────────────────────────────────────────────
-
-function toCSV(columns, rows) {
-  const esc = (v) => {
-    const s = v === null || v === undefined ? '' : String(v)
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  return [columns.map(esc).join(','), ...rows.map(r => columns.map(c => esc(r[c])).join(','))].join('\n')
-}
-
-function triggerDownload(filename, csv) {
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
 const MAX_CELL_LENGTH = 120
 const COPY_RESET_MS = 1500
 
@@ -207,11 +186,6 @@ export default function ResultsTable() {
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState(null)
 
-  function handleExportPage() {
-    if (!result) return
-    triggerDownload(`query-page-${currentPage}.csv`, toCSV(result.columns, result.rows))
-  }
-
   async function handleExportAll() {
     setExporting(true)
     setExportError(null)
@@ -260,14 +234,6 @@ export default function ResultsTable() {
             </span>
           )}
           <span className="text-gray-700">drag edges to resize</span>
-          <button
-            onClick={handleExportPage}
-            className="flex items-center gap-1 text-gray-600 hover:text-gray-300 transition-colors"
-            title="Export current page to CSV"
-          >
-            <DownloadIcon />
-            <span>Export page</span>
-          </button>
           <button
             onClick={handleExportAll}
             disabled={exporting}

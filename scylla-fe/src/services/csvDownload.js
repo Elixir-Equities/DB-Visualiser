@@ -11,11 +11,14 @@ function timeout(promise, milliseconds, message) {
 }
 
 async function getDownloadWorker() {
-  if (!window.isSecureContext || !navigator.serviceWorker || !window.MessageChannel) return null
+  if (!window.isSecureContext || !navigator.serviceWorker || !window.MessageChannel) {
+    throw new Error('Streaming downloads require a supported browser on HTTPS or localhost')
+  }
   if (!workerPromise) {
     workerPromise = timeout((async () => {
-      const registration = await navigator.serviceWorker.register('/csv-download-worker.js', { scope: '/' })
-      if (registration.active?.state === 'activated') return registration.active
+      const registration = await navigator.serviceWorker.register('/csv-download-worker.js', {
+        scope: '/', updateViaCache: 'none',
+      })
       const worker = registration.installing ?? registration.waiting ?? registration.active
       if (!worker) throw new Error('Download worker is unavailable')
       await new Promise((resolve, reject) => {
@@ -31,7 +34,7 @@ async function getDownloadWorker() {
       return worker
     })(), 10000, 'Download worker did not start').catch(() => {
       workerPromise = null
-      return null
+      throw new Error('Streaming downloads are unavailable. Allow service workers and reload the page')
     })
   }
   return workerPromise
@@ -42,64 +45,49 @@ function filename(response) {
   return name?.replace(/[^a-zA-Z0-9._-]/g, '_') || 'query-all-rows.csv'
 }
 
-async function downloadBlob(response, name) {
-  // Compatibility path for browsers/privacy settings without service workers
-  // or transferable streams. It still exports every row, but buffers the file.
-  const url = URL.createObjectURL(await response.blob())
-  const link = document.createElement('a')
-  link.href = url
-  link.download = name
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 60000)
-}
-
 export async function downloadCSVStream(response) {
   const name = filename(response)
-  const worker = await getDownloadWorker()
-  if (!worker || !response.body) return downloadBlob(response, name)
-
-  const channel = new MessageChannel()
-  const id = crypto.randomUUID()
-  const iframe = document.createElement('iframe')
-  iframe.hidden = true
+  let channel
+  let iframe
   let timer
   let handedOff = false
 
-  const finished = new Promise((resolve, reject) => {
-    const fail = (message) => reject(new Error(message))
-    channel.port1.onmessage = ({ data }) => {
-      if (data.type === 'ready') {
-        iframe.src = `/__csv-download__/${id}`
-        document.body.appendChild(iframe)
-      } else if (data.type === 'started') {
-        clearTimeout(timer)
-      } else if (data.type === 'done') {
-        resolve()
-      } else if (data.type === 'error') {
-        fail(data.message || 'Export download failed')
-      }
-    }
-    timer = setTimeout(() => fail('Export download did not start'), 30000)
-    try {
-      worker.postMessage({ type: 'csv-download', id, name, stream: response.body }, [response.body, channel.port2])
-      handedOff = true
-    } catch {
-      // Unsupported stream transfer does not consume/detach the response.
-      clearTimeout(timer)
-      resolve()
-    }
-  })
-
   try {
-    await finished
-    if (!handedOff) await downloadBlob(response, name)
+    if (!response.body) throw new Error('Export response has no stream')
+    const worker = await getDownloadWorker()
+    channel = new MessageChannel()
+    const id = crypto.randomUUID()
+    iframe = document.createElement('iframe')
+    iframe.hidden = true
+
+    await new Promise((resolve, reject) => {
+      const fail = (message) => reject(new Error(message))
+      channel.port1.onmessage = ({ data }) => {
+        if (data.type === 'ready') {
+          iframe.src = `/__csv-download__/${id}`
+          document.body.appendChild(iframe)
+        } else if (data.type === 'started') {
+          clearTimeout(timer)
+        } else if (data.type === 'done') {
+          resolve()
+        } else if (data.type === 'error') {
+          fail(data.message || 'Export download failed')
+        }
+      }
+      timer = setTimeout(() => fail('Export download did not start'), 30000)
+      try {
+        worker.postMessage({ type: 'csv-download', id, name, stream: response.body }, [response.body, channel.port2])
+        handedOff = true
+      } catch {
+        fail('This browser cannot transfer streaming downloads. Use a supported browser')
+      }
+    })
   } finally {
     clearTimeout(timer)
     if (handedOff) channel.port1.postMessage({ type: 'cancel' })
-    channel.port1.close()
-    if (!handedOff) channel.port2.close()
-    iframe.remove()
+    else await response.body?.cancel().catch(() => {})
+    channel?.port1.close()
+    if (!handedOff) channel?.port2.close()
+    iframe?.remove()
   }
 }
