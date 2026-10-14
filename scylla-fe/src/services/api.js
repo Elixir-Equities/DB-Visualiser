@@ -115,6 +115,8 @@ export async function runQuery(query, { pageSize = 50, pagingState = null } = {}
 export async function exportQueryCSV(query) {
   const response = await apiStreamRequest('/api/v1/query/export', {
     method: 'POST',
+    // The gateway streams requests accepting text/event-stream; prefer CSV.
+    headers: { Accept: 'text/csv, text/event-stream;q=0.1' },
     body: new URLSearchParams({ query }),
   })
   if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('text/csv')) {
