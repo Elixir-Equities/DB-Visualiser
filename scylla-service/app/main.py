@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.responses import err
 from app.db.session import init_session, shutdown_session
+from app.mcp_server import mcp_app, mcp_route
 
 configure_logging()
 logger = get_logger(__name__)
@@ -26,12 +27,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     shutdown_session()
 
 
+@asynccontextmanager
+async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # The MCP app's lifespan runs its session manager; without it every /mcp
+    # call fails. Entered after the ScyllaDB session and exited before it.
+    async with lifespan(app), mcp_app.lifespan(app):
+        yield
+
+
 app = FastAPI(
     title="ScyllaDB Visualiser API",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    lifespan=lifespan,
+    lifespan=app_lifespan,
 )
 
 app.add_middleware(
@@ -77,3 +86,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 
 app.include_router(v1_router)
+
+# MCP endpoint for AI clients, at /mcp (checks X-API-Key itself, see
+# mcp_server/auth.py). A route for exactly /mcp, not a mount at "/", so it
+# never catches requests meant for other routes.
+app.add_route("/mcp", mcp_route, include_in_schema=False)
