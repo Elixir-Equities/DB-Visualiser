@@ -37,4 +37,20 @@ server {
         proxy_set_header    X-Forwarded-Proto $scheme;
         proxy_read_timeout  30s;
     }
+
+    # The backend's MCP endpoint for AI clients, reached through the gateway
+    # the same way as /api/ above and under the same two rules: no X-API-Key
+    # injection (the backend's /mcp checks the key the gateway forwards) and
+    # no browser-header gate. Exact match, so it catches nothing else.
+    # Unbuffered because MCP can answer as a Server-Sent Events stream.
+    location = /mcp {
+        proxy_pass          ${BACKEND_URL}/mcp;
+        proxy_http_version  1.1;
+        proxy_set_header    Host              $host;
+        proxy_set_header    X-Real-IP         $remote_addr;
+        proxy_set_header    X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header    X-Forwarded-Proto $scheme;
+        proxy_buffering     off;
+        proxy_read_timeout  30s;
+    }
 }
