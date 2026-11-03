@@ -28,7 +28,7 @@ _NUMBER_RE = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 _IDENTIFIER_START_RE = re.compile(r"[A-Za-z_]")
 _IDENTIFIER_PART_RE = re.compile(r"[A-Za-z0-9_$]")
 _COMPARISON_OPERATORS = {"=", "<", "<=", ">", ">=", "!=", "<>"}
-_CLAUSE_STARTS = {"where", "order", "group", "per", "limit", "allow"}
+_CLAUSE_STARTS = {"where", "order", "group", "per", "limit", "allow", "using"}
 _OPENING = {"(": ")", "[": "]", "{": "}"}
 _CLOSING = {value: key for key, value in _OPENING.items()}
 _AGGREGATE_FUNCTIONS = {"count", "sum", "avg", "min", "max"}
@@ -42,6 +42,8 @@ class ProtectedQueryError(ValueError):
 class _Token:
     kind: str
     value: str
+    start: int = 0
+    end: int = 0
 
     @property
     def keyword(self) -> str:
@@ -89,6 +91,7 @@ def _tokenize(query: str) -> List[_Token]:
     size = len(query)
 
     while i < size:
+        token_start = i
         char = query[i]
         if char.isspace():
             i += 1
@@ -106,6 +109,14 @@ def _tokenize(query: str) -> List[_Token]:
             i = end + 2
             continue
 
+        if query.startswith("$$", i):
+            end = query.find("$$", i + 2)
+            if end == -1:
+                _unsafe()
+            i = end + 2
+            tokens.append(_Token("STRING", "", token_start, i))
+            continue
+
         if char == "'":
             i += 1
             while i < size:
@@ -116,7 +127,7 @@ def _tokenize(query: str) -> List[_Token]:
                     i += 2
                     continue
                 i += 1
-                tokens.append(_Token("STRING", ""))
+                tokens.append(_Token("STRING", "", token_start, i))
                 break
             else:
                 _unsafe()
@@ -135,7 +146,7 @@ def _tokenize(query: str) -> List[_Token]:
                     i += 2
                     continue
                 i += 1
-                tokens.append(_Token("QIDENT", "".join(value)))
+                tokens.append(_Token("QIDENT", "".join(value), token_start, i))
                 break
             else:
                 _unsafe()
@@ -145,13 +156,13 @@ def _tokenize(query: str) -> List[_Token]:
         # numbers and identifiers. As with strings, discard the literal value.
         uuid = _UUID_RE.match(query, i)
         if uuid:
-            tokens.append(_Token("UUID", ""))
+            tokens.append(_Token("UUID", "", i, uuid.end()))
             i = uuid.end()
             continue
 
         number = _NUMBER_RE.match(query, i)
         if number:
-            tokens.append(_Token("NUMBER", number.group(0)))
+            tokens.append(_Token("NUMBER", number.group(0), i, number.end()))
             i = number.end()
             continue
 
@@ -159,17 +170,17 @@ def _tokenize(query: str) -> List[_Token]:
             end = i + 1
             while end < size and _IDENTIFIER_PART_RE.fullmatch(query[end]):
                 end += 1
-            tokens.append(_Token("IDENT", query[i:end]))
+            tokens.append(_Token("IDENT", query[i:end], i, end))
             i = end
             continue
 
         two_char = query[i : i + 2]
         if two_char in {"<=", ">=", "!=", "<>"}:
-            tokens.append(_Token("SYMBOL", two_char))
+            tokens.append(_Token("SYMBOL", two_char, i, i + 2))
             i += 2
             continue
 
-        tokens.append(_Token("SYMBOL", char))
+        tokens.append(_Token("SYMBOL", char, i, i + 1))
         i += 1
 
     return tokens
@@ -456,6 +467,10 @@ def _validate_tail(tokens: Sequence[_Token], policy: TableMaskingPolicy) -> None
             cursor += 2
             continue
 
+        if keyword == "using":
+            _validate_timeout_clause(tokens[cursor:])
+            return
+
         _unsafe()
 
 
@@ -513,4 +528,69 @@ def analyze_protected_query(query: str) -> Optional[ProtectedQuery]:
         policy=policy,
         fingerprint=_shape_fingerprint(tokens),
         projection_visibility=projection_visibility,
+    )
+
+
+def _validate_timeout_clause(tokens: Sequence[_Token]) -> None:
+    """Recognize a trailing Scylla request timeout without accepting more CQL."""
+    if (
+        len(tokens) != 4
+        or tokens[0].keyword != "using"
+        or tokens[1].keyword != "timeout"
+        or tokens[2].kind != "NUMBER"
+        or not tokens[2].value.isdigit()
+        or tokens[3].keyword not in {"ms", "s", "m", "h"}
+    ):
+        _unsafe("USING TIMEOUT requires an integer duration in ms, s, m, or h")
+
+
+@dataclass(frozen=True)
+class AggregateExecution:
+    query: str
+    timeout_start: int
+    statement_end: int
+
+    def with_timeout(self, seconds: int) -> str:
+        # Insert before the original semicolon/comments. Literal text and
+        # quoted identifiers are preserved byte for byte.
+        return (
+            self.query[:self.timeout_start]
+            + f" USING TIMEOUT {seconds}s"
+            + self.query[self.statement_end:]
+        )
+
+
+def analyze_aggregate_execution(query: str) -> Optional[AggregateExecution]:
+    """Find native SELECT aggregates for execution without a total deadline."""
+    raw_tokens = _tokenize(query)
+    if not raw_tokens or raw_tokens[0].keyword != "select":
+        return None
+    from_index = _find_top_level_keyword(raw_tokens, "from", start=1)
+    if from_index is None:
+        return None
+
+    aggregate = False
+    for index in range(1, from_index - 1):
+        if (
+            raw_tokens[index].keyword in _AGGREGATE_FUNCTIONS
+            and raw_tokens[index + 1].value == "("
+        ):
+            if raw_tokens[index - 1].value == "." and (
+                index < 3 or _identifier(raw_tokens[index - 2]) != "system"
+            ):
+                continue
+            aggregate = True
+            break
+    if not aggregate:
+        return None
+
+    tokens = _strip_trailing_semicolon(raw_tokens)
+    statement_end = tokens[-1].end
+    using_index = _find_top_level_keyword(tokens, "using", start=from_index + 1)
+    if using_index is not None:
+        _validate_timeout_clause(tokens[using_index:])
+    return AggregateExecution(
+        query=query,
+        timeout_start=tokens[using_index].start if using_index is not None else statement_end,
+        statement_end=statement_end,
     )

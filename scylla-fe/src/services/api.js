@@ -6,6 +6,7 @@
  * and nothing outside this module should call the backend directly.
  */
 import { apiRequest } from '../api/apiClient.js'
+import { decodeQueryResponse } from './queryStream.js'
 
 class ApiError extends Error {
   constructor(message, code, status) {
@@ -23,14 +24,15 @@ class ApiError extends Error {
 async function call(path, opts = {}) {
   let body
   try {
-    body = await apiRequest(path, opts)
+    body = decodeQueryResponse(await apiRequest(path, opts))
   } catch (err) {
     // Network / timeout — the request never got a response
     if (!err.response) {
       throw new ApiError(err.message ?? 'Network error', 'NETWORK_ERROR', 0)
     }
     // HTTP error; the server may still have returned our envelope
-    const data = err.response.data
+    let data = err.response.data
+    try { data = decodeQueryResponse(data) } catch { /* Non-JSON proxy error. */ }
     throw new ApiError(
       data?.error?.message ?? err.message,
       data?.error?.code ?? 'HTTP_ERROR',
@@ -94,6 +96,11 @@ export async function getSchema(keyspace, table) {
 export async function runQuery(query, { pageSize = 50, pagingState = null } = {}) {
   return call('/api/v1/query', {
     method: 'POST',
+    // The gateway selects its streaming client using Accept. Heartbeats keep
+    // intermediate proxies alive; Axios waits for the terminal result frame.
+    headers: { Accept: 'text/event-stream' },
+    responseType: 'text',
+    timeout: 0,
     data: {
       query,
       page_size: pageSize,

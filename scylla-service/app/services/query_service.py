@@ -22,7 +22,9 @@ from app.masking import (
     analyze_protected_query,
     mask_rows,
 )
+from app.masking.query_analyzer import analyze_aggregate_execution
 from app.schemas.query import QueryResponse
+from app.services.aggregate_execution import execute_aggregate
 from app.services.paging import decode_paging_state, encode_paging_state
 from app.services.query_validator import validate_and_prepare
 from app.services.result_serialization import serialize_rows
@@ -42,6 +44,7 @@ async def run_query(
 
     try:
         protected_query = analyze_protected_query(query)
+        aggregate = analyze_aggregate_execution(query)
     except ProtectedQueryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -55,13 +58,19 @@ async def run_query(
     loop = asyncio.get_event_loop()
 
     try:
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: session.execute(stmt, paging_state=decoded_state),
-            ),
-            timeout=QUERY_TIMEOUT,
-        )
+        if aggregate:
+            result = await execute_aggregate(
+                session, aggregate, page_size, decoded_state,
+                lambda exc: log_scylla_timeout(logger, protected_query, query, exc),
+            )
+        else:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: session.execute(stmt, paging_state=decoded_state),
+                ),
+                timeout=QUERY_TIMEOUT,
+            )
     except asyncio.TimeoutError:
         log_query_timeout(logger, protected_query, query, QUERY_TIMEOUT)
         raise HTTPException(

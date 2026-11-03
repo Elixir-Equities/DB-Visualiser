@@ -1,11 +1,15 @@
 """Aggregate regressions using the real Cassandra row factory, without a DB."""
 from __future__ import annotations
 
+import asyncio
+import time
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
+from cassandra import InvalidRequest, OperationTimedOut, ReadTimeout
+from cassandra.cluster import ResultSet
 from cassandra.query import named_tuple_factory
 from cassandra.util import Date
 from fastapi import HTTPException
@@ -15,6 +19,25 @@ from app.masking.masker import MASKED_JSON, MASKED_NUMBER, MASKED_TEXT
 from app.masking.query_analyzer import ProtectedQueryError, analyze_protected_query
 from app.schemas.query import QueryRequest
 from app.services import query_service
+
+
+class DriverResponse:
+    """Match ResponseFuture's raw-row callbacks and real ResultSet metadata."""
+    def __init__(self, columns, values, paging_state=None, error=None, delay=0):
+        self._col_names = columns
+        self._col_types = []
+        self._paging_state = paging_state
+        self.rows = named_tuple_factory(columns, values)
+        self.error = error
+        self.delay = delay
+        self.clear_callbacks = Mock()
+
+    def add_callbacks(self, callback, errback):
+        handler, value = (errback, self.error) if self.error else (callback, self.rows)
+        asyncio.get_running_loop().call_later(self.delay, handler, value)
+
+    def result(self):
+        return ResultSet(self, self.rows)
 
 
 class AggregateQueryTests(unittest.IsolatedAsyncioTestCase):
@@ -35,12 +58,18 @@ class AggregateQueryTests(unittest.IsolatedAsyncioTestCase):
             paging_state=paging_state,
         )
         session = Mock(execute=Mock(return_value=result))
+        session.execute_async.return_value = DriverResponse(columns, values, paging_state)
         with patch.object(query_service, "get_session", return_value=session):
             envelope = await execute_query(
                 QueryRequest(query=query, page_size=50, paging_state=token)
             )
         self.assertTrue(envelope.success)
-        self.assertEqual(session.execute.call_args.args[0].query_string, query)
+        call = session.execute_async.call_args or session.execute.call_args
+        if session.execute_async.called:
+            self.assertEqual(call.args[0].query_string, query.rstrip(';') + ' USING TIMEOUT 60s;')
+            self.assertIsNone(call.kwargs['timeout'])
+        else:
+            self.assertEqual(call.args[0].query_string, query)
         return envelope.data
 
     async def test_row_counts_work_on_all_sources_with_and_without_aliases(self):
@@ -225,6 +254,70 @@ class AggregateQueryTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(query=query):
                 with self.assertRaises(ProtectedQueryError):
                     analyze_protected_query(query)
+
+    async def test_slow_count_outlives_normal_query_deadline(self):
+        session = Mock()
+        session.execute_async.return_value = DriverResponse(["count"], [(42,)], delay=0.05)
+        with patch.object(query_service, "get_session", return_value=session):
+            with patch.object(query_service, "QUERY_TIMEOUT", 0.01):
+                response = await query_service.run_query(
+                    "SELECT count(*) FROM pfr_aa_integration.account;", 50, None,
+                )
+        self.assertEqual(response.rows, [{"count": 42}])
+        session.execute.assert_not_called()
+        self.assertIsNone(session.execute_async.call_args.kwargs["timeout"])
+
+    async def test_non_aggregate_queries_keep_normal_deadline(self):
+        def slow_read(*args, **kwargs):
+            time.sleep(0.05)
+        session = Mock(execute=Mock(side_effect=slow_read))
+        with patch.object(query_service, "get_session", return_value=session):
+            with patch.object(query_service, "QUERY_TIMEOUT", 0.01):
+                with self.assertRaises(HTTPException) as raised:
+                    await query_service.run_query("SELECT * FROM other.events;", 50, None)
+        self.assertEqual(raised.exception.status_code, 504)
+        session.execute_async.assert_not_called()
+
+    async def test_count_retries_timeouts_with_increasing_allowances_until_success(self):
+        session = Mock()
+        errors = [ReadTimeout("slow")] * 4 + [OperationTimedOut("slow")]
+        session.execute_async.side_effect = [
+            DriverResponse(["count"], [], error=error) for error in errors
+        ] + [DriverResponse(["count"], [(42,)])]
+        with patch.object(query_service, "get_session", return_value=session):
+            with patch("app.services.aggregate_execution.asyncio.sleep", new_callable=AsyncMock):
+                response = await query_service.run_query(
+                    "SELECT count(*) FROM pfr_aa_integration.account;", 50, None,
+                )
+        self.assertEqual(response.rows, [{"count": 42}])
+        self.assertEqual(session.execute_async.call_count, 6)
+        for call, seconds in zip(session.execute_async.call_args_list, [60, 120, 240, 480, 960, 1920]):
+            self.assertIn(f"USING TIMEOUT {seconds}s;", call.args[0].query_string)
+            self.assertIsNone(call.kwargs["timeout"])
+
+    async def test_non_timeout_database_errors_are_reported_without_retrying(self):
+        session = Mock()
+        session.execute_async.return_value = DriverResponse(
+            [], [], error=InvalidRequest("bad query"),
+        )
+        with patch.object(query_service, "get_session", return_value=session):
+            with self.assertRaises(HTTPException) as raised:
+                await query_service.run_query("SELECT count(*) FROM other.events;", 50, None)
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertEqual(session.execute_async.call_count, 1)
+
+    async def test_disconnected_count_detaches_callbacks_and_stops_retrying(self):
+        session = Mock()
+        response = DriverResponse(["count"], [(42,)], delay=60)
+        session.execute_async.return_value = response
+        with patch.object(query_service, "get_session", return_value=session):
+            task = asyncio.create_task(query_service.run_query("SELECT count(*) FROM other.events;", 50, None))
+            await asyncio.sleep(0)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        response.clear_callbacks.assert_called_once()
+        self.assertEqual(session.execute_async.call_count, 1)
 
 
 if __name__ == "__main__":
