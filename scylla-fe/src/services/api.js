@@ -94,17 +94,24 @@ export async function getSchema(keyspace, table) {
  * @returns {{ columns: string[], rows: object[], row_count: number, paging_state: string|null }}
  */
 export async function runQuery(query, { pageSize = 50, pagingState = null } = {}) {
-  return call('/api/v1/query', {
-    method: 'POST',
-    // The gateway selects its streaming client using Accept. Heartbeats keep
-    // intermediate proxies alive; Axios waits for the terminal result frame.
-    headers: { Accept: 'text/event-stream' },
-    responseType: 'text',
-    timeout: 0,
-    data: {
-      query,
-      page_size: pageSize,
-      paging_state: pagingState,
-    },
-  })
+  let token = pagingState
+  while (true) {
+    const result = await call('/api/v1/query', {
+      method: 'POST',
+      // The gateway selects its streaming client using Accept. Heartbeats keep
+      // intermediate proxies alive; Axios waits for the terminal result frame.
+      headers: { Accept: 'text/event-stream' },
+      responseType: 'text',
+      timeout: 0,
+      data: {
+        query,
+        page_size: pageSize,
+        paging_state: token,
+      },
+    })
+    // Scylla filtering can yield an empty page before later matching rows.
+    // Only a null continuation token proves that the result is exhausted.
+    if (result.rows.length > 0 || !result.paging_state) return result
+    token = result.paging_state
+  }
 }
