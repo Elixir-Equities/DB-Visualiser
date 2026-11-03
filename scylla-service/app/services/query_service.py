@@ -37,7 +37,7 @@ async def run_query(
     page_size: int,
     paging_state_token: Optional[str],
 ) -> QueryResponse:
-    # Validate + normalise the CQL (blocks unsafe statements, enforces LIMIT)
+    # Validate CQL before protected-source analysis and execution.
     query = validate_and_prepare(raw_query)
 
     try:
@@ -78,12 +78,21 @@ async def run_query(
 
     # current_rows = this page only; iterating ResultSet would auto-fetch more pages
     columns: List[str] = list(result.column_names or [])
+    if len(set(columns)) != len(columns):
+        raise HTTPException(
+            status_code=400,
+            detail="Query result has duplicate column names; use unique aliases",
+        )
+    # Named-tuple field names are sanitized by the driver (e.g. system.count(*)
+    # becomes system_count). Map values by position to preserve database labels.
     if protected_query:
         try:
             raw_rows: List[Dict[str, Any]] = [
-                dict(row._asdict()) for row in result.current_rows
+                dict(zip(columns, row, strict=True)) for row in result.current_rows
             ]
-            rows = serialize_rows(mask_rows(raw_rows, protected_query.policy))
+            rows = serialize_rows(
+                mask_rows(raw_rows, protected_query.result_policy(columns))
+            )
             del raw_rows
         except Exception as exc:
             log_masking_error(logger, protected_query, exc)
@@ -93,7 +102,7 @@ async def run_query(
             ) from exc
     else:
         rows = serialize_rows(
-            dict(row._asdict()) for row in result.current_rows
+            dict(zip(columns, row, strict=True)) for row in result.current_rows
         )
 
     next_paging_state = encode_paging_state(result.paging_state, query)
