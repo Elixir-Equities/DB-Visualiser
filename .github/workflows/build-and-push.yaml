@@ -93,8 +93,6 @@ jobs:
           SCYLLA_SSL: ${{ vars.SCYLLA_SSL }}
           CA_CERT: ${{ secrets.CA_CERT }}
           PFR_MASKED_KEYSPACES: ${{ vars.PFR_MASKED_KEYSPACES }}
-          CH_MASKED_KEYSPACE: ${{ vars.CH_MASKED_KEYSPACE }}
-          CH_MASKED_TABLE: ${{ vars.CH_MASKED_TABLE }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL }}
           BACKEND_URL: ${{ vars.BACKEND_URL }}
 
