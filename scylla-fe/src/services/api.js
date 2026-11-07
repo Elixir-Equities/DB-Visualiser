@@ -5,8 +5,9 @@
  * the auth header, and the 401 refresh-and-retry. Nothing here is auth-aware —
  * and nothing outside this module should call the backend directly.
  */
-import { apiRequest } from '../api/apiClient.js'
+import { apiRequest, apiStreamRequest } from '../api/apiClient.js'
 import { decodeQueryResponse } from './queryStream.js'
+import { downloadCSVStream } from './csvDownload.js'
 
 class ApiError extends Error {
   constructor(message, code, status) {
@@ -114,4 +115,27 @@ export async function runQuery(query, { pageSize = 50, pagingState = null } = {}
     if (result.rows.length > 0 || !result.paging_state) return result
     token = result.paging_state
   }
+}
+
+/**
+ * POST /query/export — streams the full result set as a CSV download.
+ *
+ * Uses the same authentication and refresh flow as the query client. The
+ * download helper streams the response into the browser's download manager.
+ *
+ * @param {string} query CQL SELECT statement
+ * @returns {Promise<void>} resolves when the export stream finishes
+ */
+export async function exportQueryCSV(query) {
+  const response = await apiStreamRequest('/api/v1/query/export', {
+    method: 'POST',
+    // The gateway streams requests accepting text/event-stream; prefer CSV.
+    headers: { Accept: 'text/csv, text/event-stream;q=0.1' },
+    body: new URLSearchParams({ query }),
+  })
+  if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('text/csv')) {
+    const body = await response.json().catch(() => null)
+    throw new Error(body?.error?.message ?? 'Unexpected export response')
+  }
+  await downloadCSVStream(response)
 }

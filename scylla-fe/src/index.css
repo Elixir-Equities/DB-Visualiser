@@ -2,6 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Anchor of the palette — mirrors `theme-900` in tailwind.config.js. */
+  --color-surface: #11242d;
+  --color-surface-sunken: #081217;
+  --color-border: #19323e;
+  --color-muted: #598091;
+
+  color-scheme: dark;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -9,4 +19,46 @@
 html, body, #root {
   height: 100%;
   margin: 0;
+}
+
+/* Paints the overscroll area and the pre-hydration frame in theme, so the
+   viewport never flashes white around the app shell. */
+body {
+  background-color: var(--color-surface-sunken);
+}
+
+::selection {
+  background-color: var(--color-border);
+  color: #f1f6f8;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+/* WebKit — default scrollbars are light and break the dark chrome. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-muted);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }

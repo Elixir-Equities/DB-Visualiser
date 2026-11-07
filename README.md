@@ -67,12 +67,12 @@ If your cluster requires SSL, put the PEM-encoded CA certificate directly in `.e
 
 ```env
 SCYLLA_SSL=true
-SCYLLA_CA_CERT="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+CA_CERT="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
 ```
 
 For a Kubernetes deployment, the workflow writes this value to the
-`scylla-visualizer-ca` Secret and the container receives it as
-`SCYLLA_CA_CERT` (and the compatible `CA_CERT`) environment variables.
+`scylla-visualizer-ca` Secret and the container receives it as the
+`CA_CERT` environment variable.
 
 ### 4. Internal API token (required)
 
@@ -163,7 +163,7 @@ API docs are at [http://localhost:8000/docs](http://localhost:8000/docs).
 | `SCYLLA_USERNAME` | _(empty)_ | Authentication username |
 | `SCYLLA_PASSWORD` | _(empty)_ | Authentication password |
 | `SCYLLA_SSL` | `false` | Enable SSL/TLS |
-| `SCYLLA_CA_CERT` | _(empty)_ | PEM-encoded CA certificate content |
+| `CA_CERT` | _(empty)_ | PEM-encoded CA certificate content |
 | `INTERNAL_API_TOKEN` | _(empty)_ | **Required.** Shared secret for `X-API-Key` on every `/api/v1` call; container refuses to start if unset |
 | `APP_ENV` | `production` | Application environment |
 | `APP_PORT` | `8000` | Backend port (internal) |

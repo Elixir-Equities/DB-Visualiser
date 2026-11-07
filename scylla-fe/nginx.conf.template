@@ -7,11 +7,24 @@ server {
     # iframe — and top-level framing attacks — are blocked by the browser.
     # (Do NOT add X-Frame-Options: SAMEORIGIN; it would block the portal iframe.
     #  frame-ancestors is the modern, per-origin replacement.)
-    add_header Content-Security-Policy "frame-ancestors https://portal.paisasmart.com" always;
+    add_header Content-Security-Policy "frame-ancestors ${PARENT_ORIGIN}" always;
 
     # SPA — always fall back to index.html
     location / {
         try_files $uri $uri/ /index.html;
+    }
+
+    # Always load the current entry point and download worker after deployment.
+    # Hashed JS/CSS assets remain independently cacheable.
+    location = /index.html {
+        add_header Cache-Control "no-store" always;
+        add_header Content-Security-Policy "frame-ancestors ${PARENT_ORIGIN}" always;
+    }
+
+    location = /csv-download-worker.js {
+        try_files $uri =404;
+        add_header Cache-Control "no-store" always;
+        add_header Content-Security-Policy "frame-ancestors ${PARENT_ORIGIN}" always;
     }
 
     # Port 80 is the only published port (see the README run command), so the
