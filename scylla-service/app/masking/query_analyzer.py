@@ -28,9 +28,10 @@ _NUMBER_RE = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 _IDENTIFIER_START_RE = re.compile(r"[A-Za-z_]")
 _IDENTIFIER_PART_RE = re.compile(r"[A-Za-z0-9_$]")
 _COMPARISON_OPERATORS = {"=", "<", "<=", ">", ">=", "!=", "<>"}
-_CLAUSE_STARTS = {"where", "order", "group", "per", "limit", "allow"}
+_CLAUSE_STARTS = {"where", "order", "group", "per", "limit", "allow", "using"}
 _OPENING = {"(": ")", "[": "]", "{": "}"}
 _CLOSING = {value: key for key, value in _OPENING.items()}
+_AGGREGATE_FUNCTIONS = {"count", "sum", "avg", "min", "max"}
 
 
 class ProtectedQueryError(ValueError):
@@ -41,6 +42,8 @@ class ProtectedQueryError(ValueError):
 class _Token:
     kind: str
     value: str
+    start: int = 0
+    end: int = 0
 
     @property
     def keyword(self) -> str:
@@ -53,6 +56,29 @@ class ProtectedQuery:
     table: str
     policy: TableMaskingPolicy
     fingerprint: str
+    projection_visibility: Optional[tuple[bool, ...]] = None
+
+    def result_policy(self, columns: Sequence[str]) -> TableMaskingPolicy:
+        """Map validated aggregate outputs to the database's actual labels.
+
+        Visibility follows each source expression, never an alias chosen by
+        the caller. Duplicate labels cannot safely represent mixed visibility.
+        """
+        if self.projection_visibility is None:
+            return self.policy
+        if (
+            len(columns) != len(self.projection_visibility)
+            or len(set(columns)) != len(columns)
+        ):
+            _unsafe("Aggregate result columns do not match the validated projections")
+        return TableMaskingPolicy(
+            visible_fields=frozenset(
+                column
+                for column, visible in zip(columns, self.projection_visibility)
+                if visible
+            ),
+            json_text_fields=self.policy.json_text_fields,
+        )
 
 
 def _unsafe(message: str = "Unsupported query for protected PFR data") -> None:
@@ -65,6 +91,7 @@ def _tokenize(query: str) -> List[_Token]:
     size = len(query)
 
     while i < size:
+        token_start = i
         char = query[i]
         if char.isspace():
             i += 1
@@ -82,6 +109,14 @@ def _tokenize(query: str) -> List[_Token]:
             i = end + 2
             continue
 
+        if query.startswith("$$", i):
+            end = query.find("$$", i + 2)
+            if end == -1:
+                _unsafe()
+            i = end + 2
+            tokens.append(_Token("STRING", "", token_start, i))
+            continue
+
         if char == "'":
             i += 1
             while i < size:
@@ -92,7 +127,7 @@ def _tokenize(query: str) -> List[_Token]:
                     i += 2
                     continue
                 i += 1
-                tokens.append(_Token("STRING", ""))
+                tokens.append(_Token("STRING", "", token_start, i))
                 break
             else:
                 _unsafe()
@@ -111,7 +146,7 @@ def _tokenize(query: str) -> List[_Token]:
                     i += 2
                     continue
                 i += 1
-                tokens.append(_Token("QIDENT", "".join(value)))
+                tokens.append(_Token("QIDENT", "".join(value), token_start, i))
                 break
             else:
                 _unsafe()
@@ -121,13 +156,13 @@ def _tokenize(query: str) -> List[_Token]:
         # numbers and identifiers. As with strings, discard the literal value.
         uuid = _UUID_RE.match(query, i)
         if uuid:
-            tokens.append(_Token("UUID", ""))
+            tokens.append(_Token("UUID", "", i, uuid.end()))
             i = uuid.end()
             continue
 
         number = _NUMBER_RE.match(query, i)
         if number:
-            tokens.append(_Token("NUMBER", number.group(0)))
+            tokens.append(_Token("NUMBER", number.group(0), i, number.end()))
             i = number.end()
             continue
 
@@ -135,17 +170,17 @@ def _tokenize(query: str) -> List[_Token]:
             end = i + 1
             while end < size and _IDENTIFIER_PART_RE.fullmatch(query[end]):
                 end += 1
-            tokens.append(_Token("IDENT", query[i:end]))
+            tokens.append(_Token("IDENT", query[i:end], i, end))
             i = end
             continue
 
         two_char = query[i : i + 2]
         if two_char in {"<=", ">=", "!=", "<>"}:
-            tokens.append(_Token("SYMBOL", two_char))
+            tokens.append(_Token("SYMBOL", two_char, i, i + 2))
             i += 2
             continue
 
-        tokens.append(_Token("SYMBOL", char))
+        tokens.append(_Token("SYMBOL", char, i, i + 1))
         i += 1
 
     return tokens
@@ -241,19 +276,58 @@ def _split_top_level(
     return parts
 
 
-def _validate_projection(tokens: Sequence[_Token]) -> None:
+def _validate_projection(
+    tokens: Sequence[_Token],
+    policy: TableMaskingPolicy,
+) -> Optional[tuple[bool, ...]]:
     if len(tokens) == 1 and tokens[0].value == "*":
-        return
+        return None
 
+    visibility: List[bool] = []
+    has_aggregate = False
     for projection in _split_top_level(tokens, symbol=","):
-        if len(projection) != 1 or _identifier(projection[0]) is None:
-            _unsafe(
-                "Aliases and calculated projections are not supported for protected PFR data"
-            )
         if projection[0].keyword in {"json", "distinct"}:
             _unsafe(
                 "JSON, DISTINCT, and calculated projections are not supported for protected PFR data"
             )
+        field = _identifier(projection[0])
+        if len(projection) == 1 and field is not None:
+            visibility.append(policy.is_visible(field))
+            continue
+
+        # Only native aggregates with one direct argument are supported. Do
+        # not allow nested expressions, arbitrary functions, or UDA namespaces.
+        expression = projection
+        if len(expression) >= 3 and expression[-2].keyword == "as":
+            if _identifier(expression[-1]) is None:
+                _unsafe("Invalid aggregate alias for protected data")
+            expression = expression[:-2]
+        if (
+            len(expression) >= 3
+            and _identifier(expression[0]) == "system"
+            and expression[1].value == "."
+        ):
+            expression = expression[2:]
+        if (
+            len(expression) != 4
+            or expression[0].keyword not in _AGGREGATE_FUNCTIONS
+            or expression[1].value != "("
+            or expression[3].value != ")"
+        ):
+            _unsafe("Only direct columns and native aggregates are supported for protected data")
+
+        argument = expression[2]
+        is_row_count = expression[0].keyword == "count" and (
+            (argument.kind == "SYMBOL" and argument.value == "*")
+            or (argument.kind == "NUMBER" and argument.value == "1")
+        )
+        field = _identifier(argument)
+        if not is_row_count and (field is None or not policy.is_visible(field)):
+            _unsafe("Aggregates are allowed only on visible fields or COUNT(*)/COUNT(1)")
+        visibility.append(True)
+        has_aggregate = True
+
+    return tuple(visibility) if has_aggregate else None
 
 
 def _contains_function_call(tokens: Sequence[_Token]) -> bool:
@@ -354,7 +428,15 @@ def _validate_tail(tokens: Sequence[_Token], policy: TableMaskingPolicy) -> None
             continue
 
         if keyword == "group":
-            _unsafe("GROUP BY is not supported for protected PFR data")
+            if cursor + 1 >= len(tokens) or tokens[cursor + 1].keyword != "by":
+                _unsafe()
+            end = _next_clause(tokens, cursor + 2)
+            for grouping in _split_top_level(tokens[cursor + 2 : end], symbol=","):
+                field = _identifier(grouping[0])
+                if len(grouping) != 1 or field is None or not policy.is_visible(field):
+                    _unsafe("GROUP BY is allowed only on direct visible fields")
+            cursor = end
+            continue
 
         if keyword == "per":
             clause = tokens[cursor : cursor + 4]
@@ -384,6 +466,10 @@ def _validate_tail(tokens: Sequence[_Token], policy: TableMaskingPolicy) -> None
                 _unsafe()
             cursor += 2
             continue
+
+        if keyword == "using":
+            _validate_timeout_clause(tokens[cursor:])
+            return
 
         _unsafe()
 
@@ -433,7 +519,7 @@ def analyze_protected_query(query: str) -> Optional[ProtectedQuery]:
     if policy is None:
         _unsafe("Unknown table in protected PFR keyspace")
 
-    _validate_projection(tokens[1:from_index])
+    projection_visibility = _validate_projection(tokens[1:from_index], policy)
     _validate_tail(tokens[from_index + 4 :], policy)
 
     return ProtectedQuery(
@@ -441,4 +527,70 @@ def analyze_protected_query(query: str) -> Optional[ProtectedQuery]:
         table=table,
         policy=policy,
         fingerprint=_shape_fingerprint(tokens),
+        projection_visibility=projection_visibility,
+    )
+
+
+def _validate_timeout_clause(tokens: Sequence[_Token]) -> None:
+    """Recognize a trailing Scylla request timeout without accepting more CQL."""
+    if (
+        len(tokens) != 4
+        or tokens[0].keyword != "using"
+        or tokens[1].keyword != "timeout"
+        or tokens[2].kind != "NUMBER"
+        or not tokens[2].value.isdigit()
+        or tokens[3].keyword not in {"ms", "s", "m", "h"}
+    ):
+        _unsafe("USING TIMEOUT requires an integer duration in ms, s, m, or h")
+
+
+@dataclass(frozen=True)
+class AggregateExecution:
+    query: str
+    timeout_start: int
+    statement_end: int
+
+    def with_timeout(self, seconds: int) -> str:
+        # Insert before the original semicolon/comments. Literal text and
+        # quoted identifiers are preserved byte for byte.
+        return (
+            self.query[:self.timeout_start]
+            + f" USING TIMEOUT {seconds}s"
+            + self.query[self.statement_end:]
+        )
+
+
+def analyze_aggregate_execution(query: str) -> Optional[AggregateExecution]:
+    """Find native SELECT aggregates for execution without a total deadline."""
+    raw_tokens = _tokenize(query)
+    if not raw_tokens or raw_tokens[0].keyword != "select":
+        return None
+    from_index = _find_top_level_keyword(raw_tokens, "from", start=1)
+    if from_index is None:
+        return None
+
+    aggregate = False
+    for index in range(1, from_index - 1):
+        if (
+            raw_tokens[index].keyword in _AGGREGATE_FUNCTIONS
+            and raw_tokens[index + 1].value == "("
+        ):
+            if raw_tokens[index - 1].value == "." and (
+                index < 3 or _identifier(raw_tokens[index - 2]) != "system"
+            ):
+                continue
+            aggregate = True
+            break
+    if not aggregate:
+        return None
+
+    tokens = _strip_trailing_semicolon(raw_tokens)
+    statement_end = tokens[-1].end
+    using_index = _find_top_level_keyword(tokens, "using", start=from_index + 1)
+    if using_index is not None:
+        _validate_timeout_clause(tokens[using_index:])
+    return AggregateExecution(
+        query=query,
+        timeout_start=tokens[using_index].start if using_index is not None else statement_end,
+        statement_end=statement_end,
     )

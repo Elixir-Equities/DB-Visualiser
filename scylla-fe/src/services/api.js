@@ -6,6 +6,7 @@
  * and nothing outside this module should call the backend directly.
  */
 import { apiRequest, apiStreamRequest } from '../api/apiClient.js'
+import { decodeQueryResponse } from './queryStream.js'
 import { downloadCSVStream } from './csvDownload.js'
 
 class ApiError extends Error {
@@ -24,14 +25,15 @@ class ApiError extends Error {
 async function call(path, opts = {}) {
   let body
   try {
-    body = await apiRequest(path, opts)
+    body = decodeQueryResponse(await apiRequest(path, opts))
   } catch (err) {
     // Network / timeout — the request never got a response
     if (!err.response) {
       throw new ApiError(err.message ?? 'Network error', 'NETWORK_ERROR', 0)
     }
     // HTTP error; the server may still have returned our envelope
-    const data = err.response.data
+    let data = err.response.data
+    try { data = decodeQueryResponse(data) } catch { /* Non-JSON proxy error. */ }
     throw new ApiError(
       data?.error?.message ?? err.message,
       data?.error?.code ?? 'HTTP_ERROR',
@@ -93,14 +95,26 @@ export async function getSchema(keyspace, table) {
  * @returns {{ columns: string[], rows: object[], row_count: number, paging_state: string|null }}
  */
 export async function runQuery(query, { pageSize = 50, pagingState = null } = {}) {
-  return call('/api/v1/query', {
-    method: 'POST',
-    data: {
-      query,
-      page_size: pageSize,
-      paging_state: pagingState,
-    },
-  })
+  let token = pagingState
+  while (true) {
+    const result = await call('/api/v1/query', {
+      method: 'POST',
+      // The gateway selects its streaming client using Accept. Heartbeats keep
+      // intermediate proxies alive; Axios waits for the terminal result frame.
+      headers: { Accept: 'text/event-stream' },
+      responseType: 'text',
+      timeout: 0,
+      data: {
+        query,
+        page_size: pageSize,
+        paging_state: token,
+      },
+    })
+    // Scylla filtering can yield an empty page before later matching rows.
+    // Only a null continuation token proves that the result is exhausted.
+    if (result.rows.length > 0 || !result.paging_state) return result
+    token = result.paging_state
+  }
 }
 
 /**

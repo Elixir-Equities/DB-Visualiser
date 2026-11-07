@@ -171,7 +171,52 @@ Execute a CQL `SELECT` query and receive results as columns + rows.
 }
 ```
 
-> If your query has no `LIMIT` clause, the server automatically appends `LIMIT 100`.
+Results are paged (`page_size` defaults to 50, maximum 200). Use the returned
+`paging_state` with the same query to fetch the next page. No `LIMIT` is added.
+
+Aggregate queries are supported, including `COUNT(*)`, `COUNT(1)`, `COUNT(column)`,
+`SUM`, `AVG`, `MIN`, and `MAX`. For protected PFR and chat-history sources:
+
+- `COUNT(*)` and `COUNT(1)` are allowed; column aggregates require a visible field.
+- Native aggregates may use `AS` aliases or the `system.` namespace. Other
+  calculated expressions and aliases on direct columns remain unsupported.
+- Filters, ordering, and `GROUP BY` may reference only visible fields.
+- Sensitive columns selected alongside aggregates remain masked.
+- Result columns must have unique names; use distinct aggregate aliases when needed.
+
+For example:
+
+```sql
+SELECT COUNT(*) AS total FROM my_keyspace.events;
+SELECT SUM(amount) AS total_amount, AVG(amount) AS average_amount
+FROM my_keyspace.events;
+```
+
+Result row keys match the returned `columns`, including unaliased aggregate
+labels such as `system.sum(amount)`. `row_count` counts result rows, so a single
+aggregate result has `row_count: 1`; the aggregate value is inside `rows[0]`.
+Native aggregate queries have no application or driver execution deadline.
+Each Scylla request uses `USING TIMEOUT` (starting at 60 seconds); a request
+timeout is retried with a larger allowance until the aggregate completes.
+There is no overall duration or retry-count limit. Only completed results
+are returned, with no estimated counts or accumulated partial attempts.
+Other database errors, such as invalid queries or unavailable connections,
+are still reported. Ordinary non-aggregate queries retain the 10-second limit.
+
+The Visualiser sends `Accept: text/event-stream` on query requests. This selects
+the portal gateway's streaming client and returns SSE comments every five
+seconds while waiting, followed by one `result` event containing the usual
+response envelope. Nginx forwards chunks without buffering so the connection
+stays active throughout long counts. Streamed errors use `success: false` in
+the terminal envelope, since HTTP headers have already been sent. Clients
+without this Accept header keep receiving ordinary JSON responses.
+
+Closing the request stops further retries and detaches driver callbacks. The
+currently executing Scylla read can finish server-side; protocol v4 has no
+request cancellation. Keep the Visualiser open until the result is returned.
+
+Scylla's [count-query guidance](https://docs.scylladb.com/manual/stable/kb/count-all-rows.html)
+describes why full-table counts need a larger server-side timeout.
 
 **Success**
 ```json
