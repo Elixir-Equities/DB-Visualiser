@@ -7,7 +7,8 @@
   --color-surface: #11242d;
   --color-surface-sunken: #081217;
   --color-border: #19323e;
-  --color-muted: #598091;
+  --color-muted: #6a91a3;
+  --color-focus: #818cf8;
 
   color-scheme: dark;
 }
@@ -25,6 +26,13 @@ html, body, #root {
    viewport never flashes white around the app shell. */
 body {
   background-color: var(--color-surface-sunken);
+}
+
+/* One visible focus treatment for every control; mouse clicks don't trigger it. */
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+  border-radius: 4px;
 }
 
 ::selection {

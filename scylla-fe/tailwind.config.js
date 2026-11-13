@@ -13,7 +13,8 @@ const theme = {
   200: '#e1ebef',
   300: '#c8d8df',
   400: '#92adb9',
-  500: '#598091',
+  // Lifted from #598091 so muted text clears WCAG AA (≥4.5:1) on 900/950.
+  500: '#6a91a3',
   600: '#3d6071',
   700: '#2a4b5a',
   800: '#19323e',
@@ -29,6 +30,15 @@ export default {
       colors: {
         theme,
         gray: theme,
+      },
+      keyframes: {
+        indeterminate: {
+          '0%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(250%)' },
+        },
+      },
+      animation: {
+        indeterminate: 'indeterminate 1.1s ease-in-out infinite',
       },
     },
   },

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getSchema } from '../services/api.js'
+import { fetchSchema } from '../services/catalog.js'
 
 export function useSchema(keyspace, table) {
   const [schema, setSchema] = useState(null)
@@ -9,12 +9,14 @@ export function useSchema(keyspace, table) {
   useEffect(() => {
     if (!keyspace || !table) {
       setSchema(null)
+      setError(null)
       return
     }
     let cancelled = false
     setLoading(true)
     setError(null)
-    getSchema(keyspace, table)
+    setSchema(null)
+    fetchSchema(keyspace, table)
       .then((data) => { if (!cancelled) setSchema(data) })
       .catch((e) => { if (!cancelled) setError(e.message) })
       .finally(() => { if (!cancelled) setLoading(false) })

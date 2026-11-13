@@ -1,292 +1,526 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppContext } from '../../context/AppContext.jsx'
 import { useColumnResize } from '../../hooks/useColumnResize.js'
+import { useCopy } from '../../hooks/useCopy.js'
+import { useDismiss } from '../../hooks/useDismiss.js'
+import { useSchema } from '../../hooks/useSchema.js'
+import { describeValue, estimateColumnWidth } from '../../services/valueFormat.js'
+import { errorHint } from '../../services/errorHints.js'
+import { KEY_META } from '../SchemaViewer/keyMeta.js'
+import Spinner from '../ui/Spinner.jsx'
+import {
+  AlertIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon, CloseIcon, ColumnsIcon,
+  CopyIcon, DownloadIcon, FirstPageIcon, SortIcon,
+} from '../ui/icons.jsx'
+import { InlineValue } from './ValueView.jsx'
+import RowInspector from './RowInspector.jsx'
 
-const MAX_CELL_LENGTH = 120
-const COPY_RESET_MS = 1500
+const ROW_NUM_WIDTH = 52
+const NO_COLUMNS = []
 
-// ─── Shared states ────────────────────────────────────────────────────────────
+/** `keyspace.table` named in a query's FROM clause, if any. */
+function parseFromTable(cql) {
+  const m = /\bFROM\s+"?(\w+)"?\s*\.\s*"?(\w+)"?/i.exec(cql ?? '')
+  return m ? { keyspace: m[1], table: m[2] } : null
+}
 
-function useCopyCell() {
-  const [copied, setCopied] = useState(null) // "rowIndex-colName"
-  const timer = useRef(null)
+function compareValues(a, b) {
+  const na = a === null || a === undefined
+  const nb = b === null || b === undefined
+  if (na || nb) return na === nb ? 0 : na ? 1 : -1 // nulls last
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b)
+  return describeValue(a).text.localeCompare(describeValue(b).text, undefined, { numeric: true })
+}
 
-  const copy = useCallback((key, value) => {
-    if (value === null || value === undefined) return
-    navigator.clipboard.writeText(String(value)).then(() => {
-      setCopied(key)
-      clearTimeout(timer.current)
-      timer.current = setTimeout(() => setCopied(null), COPY_RESET_MS)
+// ─── Toolbar pieces ───────────────────────────────────────────────────────────
+
+const toolButton =
+  'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-gray-300 hover:text-white hover:bg-gray-800 transition-colors disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-transparent'
+
+function ColumnsMenu({ columns, hidden, setHidden }) {
+  const [open, setOpen] = useState(false)
+  const [filter, setFilter] = useState('')
+  const ref = useRef(null)
+  const close = useCallback(() => setOpen(false), [])
+  useDismiss(ref, open, close)
+
+  const shown = columns.filter((c) => c.toLowerCase().includes(filter.trim().toLowerCase()))
+
+  function toggle(col) {
+    setHidden((prev) => {
+      const next = new Set(prev)
+      next.has(col) ? next.delete(col) : next.add(col)
+      // Never hide everything — the grid would collapse to row numbers.
+      return next.size === columns.length ? prev : next
     })
-  }, [])
-
-  return { copied, copy }
-}
-
-// ─── Icons ────────────────────────────────────────────────────────────────────
-
-function CopyIcon() {
-  return (
-    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <rect x="9" y="9" width="13" height="13" rx="2" />
-      <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-    </svg>
-  )
-}
-
-function CheckIcon() {
-  return (
-    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-    </svg>
-  )
-}
-
-function DownloadIcon() {
-  return (
-    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-    </svg>
-  )
-}
-
-function SpinIcon() {
-  return (
-    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-    </svg>
-  )
-}
-
-// ─── Cell ─────────────────────────────────────────────────────────────────────
-
-function Cell({ value, rowIndex, col, copied, onCopy }) {
-  const key = `${rowIndex}-${col}`
-  const isCopied = copied === key
-  const isNull = value === null || value === undefined
-  const full = isNull ? null : String(value)
-  const display = full && full.length > MAX_CELL_LENGTH
-    ? full.slice(0, MAX_CELL_LENGTH) + '…'
-    : full
+  }
 
   return (
-    <td className="group relative px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden">
-      {isNull
-        ? <span className="text-gray-700 italic select-none">null</span>
-        : <span title={full} className="block overflow-hidden text-ellipsis text-gray-300 pr-5">
-            {display}
+    <div ref={ref} className="relative">
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open} className={toolButton}>
+        <ColumnsIcon className="w-3.5 h-3.5" />
+        Columns
+        {hidden.size > 0 && (
+          <span className="rounded bg-indigo-500/20 px-1 text-[10px] text-indigo-200 tabular-nums">
+            {columns.length - hidden.size}/{columns.length}
           </span>
-      }
+        )}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-30 w-64 rounded-lg border border-gray-700 bg-gray-900 shadow-2xl shadow-black/50">
+          {columns.length > 8 && (
+            <div className="p-2 border-b border-gray-800">
+              <input
+                autoFocus
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Find column…"
+                aria-label="Find column"
+                className="w-full rounded-md bg-gray-950 border border-gray-800 px-2 py-1 text-xs text-gray-100 placeholder-gray-500 outline-none focus:border-gray-600"
+              />
+            </div>
+          )}
+          <ul className="max-h-72 overflow-y-auto py-1">
+            {shown.map((col) => (
+              <li key={col}>
+                <label className="flex items-center gap-2 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!hidden.has(col)}
+                    onChange={() => toggle(col)}
+                    className="accent-indigo-500"
+                  />
+                  <span className="font-mono truncate">{col}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          {hidden.size > 0 && (
+            <div className="border-t border-gray-800 px-3 py-1.5">
+              <button onClick={() => setHidden(new Set())} className="text-xs text-indigo-300 hover:text-indigo-200">
+                Show all columns
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
-      {!isNull && (
+function ExportButton() {
+  const { exportAll } = useAppContext()
+  const [exporting, setExporting] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleExport() {
+    setExporting(true)
+    setError(null)
+    try {
+      await exportAll()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      {error && (
+        <span className="text-xs text-red-300 truncate max-w-[16rem]" title={error}>
+          Export failed: {error}
+        </span>
+      )}
+      <button
+        onClick={handleExport}
+        disabled={exporting}
+        className={toolButton}
+        title="Download every row of this query as CSV — not just this page"
+      >
+        {exporting ? <Spinner className="w-3.5 h-3.5" /> : <DownloadIcon className="w-3.5 h-3.5" />}
+        {exporting ? 'Exporting…' : 'Export CSV'}
+      </button>
+    </div>
+  )
+}
+
+function Pager() {
+  const { currentPage, canPrev, canNext, hasMore, prevPage, nextPage, firstPage, queryLoading, loadingPage } = useAppContext()
+  const fetchingNext = queryLoading && loadingPage > 1
+  return (
+    <div className="flex items-center rounded-md border border-gray-800" role="group" aria-label="Pagination">
+      <button onClick={firstPage} disabled={!canPrev} className={`${toolButton} rounded-r-none px-1.5`} aria-label="First page" title="First page">
+        <FirstPageIcon className="w-3.5 h-3.5" />
+      </button>
+      <button onClick={prevPage} disabled={!canPrev} className={`${toolButton} rounded-none px-1.5`} aria-label="Previous page" title="Previous page">
+        <ChevronLeftIcon className="w-3.5 h-3.5" />
+      </button>
+      <span className="px-2 text-xs text-gray-300 tabular-nums border-x border-gray-800 py-1" aria-live="polite">
+        Page {currentPage}{!hasMore && currentPage > 1 ? ' (last)' : ''}
+      </span>
+      <button onClick={nextPage} disabled={!canNext} className={`${toolButton} rounded-l-none px-1.5`} aria-label="Next page" title={hasMore ? 'Next page' : 'No more rows'}>
+        {fetchingNext ? <Spinner className="w-3.5 h-3.5" /> : <ChevronRightIcon className="w-3.5 h-3.5" />}
+      </button>
+    </div>
+  )
+}
+
+// ─── Grid cells ───────────────────────────────────────────────────────────────
+
+function Cell({ value, cellKey, copied, onCopy }) {
+  const isCopied = copied === cellKey
+  const { text } = describeValue(value)
+  return (
+    <td className="group/cell relative px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis border-r border-gray-800/40">
+      <InlineValue value={value} />
+      {text !== null && (
         <button
-          className={`
-            absolute right-1.5 top-1/2 -translate-y-1/2
-            opacity-0 group-hover:opacity-100 transition-opacity
-            p-0.5 rounded
-            ${isCopied
-              ? 'text-green-400'
-              : 'text-gray-600 hover:text-gray-300 hover:bg-gray-700/60'
-            }
-          `}
-          onClick={() => onCopy(key, value)}
+          className={`absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded bg-gray-900 shadow transition-opacity
+            ${isCopied ? 'text-emerald-400 opacity-100' : 'text-gray-400 hover:text-white opacity-0 group-hover/cell:opacity-100 focus-visible:opacity-100'}`}
+          onClick={(e) => { e.stopPropagation(); onCopy(cellKey, text) }}
+          aria-label="Copy value"
           title="Copy value"
         >
-          {isCopied ? <CheckIcon /> : <CopyIcon />}
+          {isCopied ? <CheckIcon className="w-3 h-3" /> : <CopyIcon className="w-3 h-3" />}
         </button>
       )}
     </td>
   )
 }
 
-// ─── Header cell with resize handle ──────────────────────────────────────────
-
-function HeaderCell({ col, width, onResizeStart }) {
+function HeaderCell({ col, width, info, sort, onSort, onResizeStart }) {
   const thRef = useRef(null)
+  const keyMeta = info && info.kind !== 'regular' ? KEY_META[info.kind] : null
+  const sorted = sort.col === col ? sort.dir : null
 
   return (
     <th
       ref={thRef}
-      className="relative px-3 py-2 text-gray-400 font-medium whitespace-nowrap border-b border-gray-700 tracking-wide text-left select-none"
-      style={{ width, minWidth: width }}
+      scope="col"
+      aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : 'none'}
+      className="relative p-0 bg-gray-800 border-b border-r border-gray-700/70 text-left font-medium select-none"
+      style={{ width, minWidth: width, maxWidth: width }}
     >
-      <span className="block overflow-hidden text-ellipsis pr-2">{col}</span>
-
-      {/* Resize handle */}
-      <div
-        className="absolute right-0 top-0 h-full w-4 flex items-center justify-center cursor-col-resize group/handle z-10"
-        onMouseDown={(e) => onResizeStart(e, col, thRef.current)}
+      <button
+        onClick={() => onSort(col)}
+        className="w-full flex flex-col items-start gap-0.5 px-3 py-1.5 pr-5 text-left hover:bg-gray-700/40 transition-colors"
+        title={`Sort this page by ${col}`}
       >
-        <div className="w-px h-4 bg-gray-700 group-hover/handle:bg-indigo-500 transition-colors" />
+        <span className="flex items-center gap-1.5 w-full min-w-0">
+          {keyMeta && <span className={`rounded px-1 text-[9px] leading-4 font-semibold ${keyMeta.badge}`}>{keyMeta.short}</span>}
+          <span className={`truncate font-mono text-xs ${keyMeta ? keyMeta.text : 'text-gray-100'}`}>{col}</span>
+          {sorted && <SortIcon dir={sorted} className="w-3 h-3 text-indigo-300" />}
+        </span>
+        {info?.type && <span className="font-mono text-[10px] text-gray-400 truncate w-full">{info.type}</span>}
+      </button>
+      <div
+        className="absolute right-0 top-0 h-full w-2 cursor-col-resize group/handle z-10 flex justify-end"
+        onMouseDown={(e) => onResizeStart(e, col, thRef.current)}
+        aria-hidden="true"
+      >
+        <div className="w-0.5 h-full group-hover/handle:bg-indigo-500 transition-colors" />
       </div>
     </th>
   )
 }
 
-// ─── Static states ────────────────────────────────────────────────────────────
+// ─── States ───────────────────────────────────────────────────────────────────
 
-function EmptyState() {
+function Panel({ children }) {
   return (
-    <div className="flex flex-col items-center justify-center py-20 gap-3">
-      <svg className="w-9 h-9 text-gray-700 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-      </svg>
-      <div className="text-center space-y-1">
-        <p className="text-sm text-gray-500">No results yet</p>
-        <p className="text-xs text-gray-700">Select a table or write a CQL query above</p>
-      </div>
+    <div className="flex-1 min-h-0 flex flex-col items-center justify-center rounded-lg border border-dashed border-gray-800 px-6 text-center">
+      {children}
     </div>
   )
 }
 
 function LoadingSkeleton() {
   return (
-    <div className="rounded-lg border border-gray-700/60 overflow-hidden">
-      <div className="flex gap-4 px-3 py-2 border-b border-gray-800 bg-gray-800/60">
-        {[40, 80, 55, 65].map((w, i) => (
+    <div className="flex-1 min-h-0 rounded-lg border border-gray-800 overflow-hidden" aria-busy="true" aria-label="Loading results">
+      <div className="flex gap-4 px-3 py-3 border-b border-gray-800 bg-gray-800/60">
+        {[40, 80, 55, 65, 70].map((w, i) => (
           <div key={i} className="h-3 rounded bg-gray-700 animate-pulse" style={{ width: `${w}px`, animationDelay: `${i * 60}ms` }} />
         ))}
       </div>
-      <div className="divide-y divide-gray-800/60">
-        {[1, 2, 3, 4].map((row) => (
-          <div key={row} className="flex gap-4 px-3 py-2">
-            {[55, 110, 70, 85].map((w, i) => (
-              <div key={i} className="h-3 rounded bg-gray-800 animate-pulse" style={{ width: `${w}px`, animationDelay: `${row * 80 + i * 40}ms` }} />
-            ))}
-          </div>
-        ))}
-      </div>
+      {[1, 2, 3, 4, 5, 6].map((row) => (
+        <div key={row} className="flex gap-4 px-3 py-2.5 border-b border-gray-800/60">
+          {[55, 110, 70, 85, 60].map((w, i) => (
+            <div key={i} className="h-3 rounded bg-gray-800 animate-pulse" style={{ width: `${w}px`, animationDelay: `${row * 80 + i * 40}ms` }} />
+          ))}
+        </div>
+      ))}
     </div>
   )
 }
 
-function ErrorState({ error }) {
+function ErrorBanner({ error, onDismiss, title = 'Query failed' }) {
+  const hint = errorHint(error)
   return (
-    <div className="rounded-lg border border-red-900/50 bg-red-950/20 px-4 py-3 flex gap-3">
-      <svg className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-      <div className="min-w-0">
-        <p className="text-xs font-medium text-red-400">Query failed</p>
-        <p className="text-xs text-red-500/70 mt-0.5 font-mono whitespace-pre-wrap break-all">{error}</p>
+    <div role="alert" className="flex-shrink-0 rounded-lg border border-red-900/70 bg-red-950/30 px-4 py-3 flex gap-3">
+      <AlertIcon className="w-4 h-4 text-red-400 mt-0.5" />
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="text-sm font-medium text-red-200">{title}</p>
+        {hint && <p className="text-xs text-red-100/90 leading-relaxed">{hint}</p>}
+        <p className="text-xs text-red-300/90 font-mono whitespace-pre-wrap break-words">{error}</p>
       </div>
+      {onDismiss && (
+        <button onClick={onDismiss} aria-label="Dismiss error" className="self-start p-1 rounded text-red-300 hover:text-white hover:bg-red-900/40">
+          <CloseIcon className="w-3.5 h-3.5" />
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ─── Grid ─────────────────────────────────────────────────────────────────────
+
+function ResultGrid({ result }) {
+  const { rowOffset, queryLoading, resultQuery, isStale, elapsedMs, hasMore, currentPage, execute } = useAppContext()
+  const { copied, copy } = useCopy()
+  const columns = result.columns ?? NO_COLUMNS
+  const rows = result.rows
+  const columnsKey = columns.join(' ')
+
+  // Types and key roles when the query reads one table straight from a FROM clause.
+  const from = parseFromTable(resultQuery)
+  const { schema } = useSchema(from?.keyspace, from?.table)
+  const columnInfo = useMemo(() => {
+    const info = {}
+    for (const c of schema?.columns ?? []) info[c.name] = c
+    return info
+  }, [schema])
+
+  // Size columns to their content once per column set, so paging doesn't make them jump.
+  const estimates = useRef({ key: null, widths: {} })
+  if (estimates.current.key !== columnsKey) {
+    estimates.current = {
+      key: columnsKey,
+      widths: Object.fromEntries(columns.map((c) => [c, estimateColumnWidth(c, rows)])),
+    }
+  }
+  const { getWidth, startResize } = useColumnResize(columns, estimates.current.widths)
+
+  const [hidden, setHidden] = useState(() => new Set())
+  const [sort, setSort] = useState({ col: null, dir: null })
+  const [selected, setSelected] = useState(null) // index into `rows`
+
+  useEffect(() => {
+    setHidden(new Set())
+    setSort({ col: null, dir: null })
+  }, [columnsKey])
+
+  // A new page means different rows — the open row no longer exists.
+  useEffect(() => { setSelected(null) }, [result])
+
+  const visibleColumns = columns.filter((c) => !hidden.has(c))
+
+  const order = useMemo(() => {
+    const idx = rows.map((_, i) => i)
+    if (!sort.col) return idx
+    const sign = sort.dir === 'desc' ? -1 : 1
+    return idx.sort((a, b) => sign * compareValues(rows[a][sort.col], rows[b][sort.col]) || a - b)
+  }, [rows, sort])
+
+  function cycleSort(col) {
+    setSort((s) => {
+      if (s.col !== col) return { col, dir: 'asc' }
+      if (s.dir === 'asc') return { col, dir: 'desc' }
+      return { col: null, dir: null }
+    })
+  }
+
+  const selectedPos = selected === null ? -1 : order.indexOf(selected)
+  const goPrev = selectedPos > 0 ? () => setSelected(order[selectedPos - 1]) : null
+  const goNext = selectedPos >= 0 && selectedPos < order.length - 1 ? () => setSelected(order[selectedPos + 1]) : null
+  const closeInspector = useCallback(() => setSelected(null), [])
+
+  // Keep the inspected row in view while stepping with the keyboard.
+  const bodyRef = useRef(null)
+  useEffect(() => {
+    if (selected === null) return
+    bodyRef.current?.querySelector(`[data-row="${selected}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [selected])
+
+  const first = rowOffset + 1
+  const last = rowOffset + rows.length
+  const tableWidth = ROW_NUM_WIDTH + visibleColumns.reduce((sum, c) => sum + getWidth(c), 0)
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-2">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 flex-shrink-0">
+        <p className="flex items-center gap-1.5 text-xs text-gray-400 tabular-nums">
+          <span className="text-gray-100 font-medium">
+            {rows.length === 0 ? 'No rows' : `Rows ${first.toLocaleString()}–${last.toLocaleString()}`}
+          </span>
+          {rows.length > 0 && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className={hasMore ? 'text-gray-300' : ''}>{hasMore ? 'more available' : 'end of results'}</span>
+            </>
+          )}
+          <span aria-hidden="true">·</span>
+          <span>{columns.length} {columns.length === 1 ? 'column' : 'columns'}</span>
+          {elapsedMs !== null && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>{elapsedMs < 1000 ? `${elapsedMs} ms` : `${(elapsedMs / 1000).toFixed(1)} s`}</span>
+            </>
+          )}
+          {sort.col && (
+            <>
+              <span aria-hidden="true">·</span>
+              <button onClick={() => setSort({ col: null, dir: null })} className="text-indigo-300 hover:text-indigo-200">
+                sorted on this page by {sort.col} — clear
+              </button>
+            </>
+          )}
+        </p>
+
+        {isStale && (
+          <span className="flex items-center gap-2 rounded-full border border-amber-700/60 bg-amber-950/40 pl-2.5 pr-1 py-0.5 text-xs text-amber-200">
+            Query edited — results are from the previous run
+            <button
+              onClick={() => execute()}
+              disabled={queryLoading}
+              className="rounded-full bg-amber-500/20 px-2 py-px text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
+            >
+              Run
+            </button>
+          </span>
+        )}
+
+        <div className="ml-auto flex items-center gap-2">
+          {columns.length > 0 && <ColumnsMenu columns={columns} hidden={hidden} setHidden={setHidden} />}
+          <Pager />
+          <ExportButton />
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <Panel>
+          <p className="text-sm text-gray-300">The query returned no rows</p>
+          <p className="mt-1 text-xs text-gray-500">Check the WHERE clause — or the table may simply be empty.</p>
+        </Panel>
+      ) : (
+        <div className="relative flex-1 min-h-0 rounded-lg border border-gray-800 overflow-hidden">
+          {queryLoading && (
+            <div className="absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-indigo-950" aria-hidden="true">
+              <div className="h-full w-2/5 bg-indigo-400 animate-indeterminate" />
+            </div>
+          )}
+
+          <div ref={bodyRef} className={`h-full overflow-auto transition-opacity ${queryLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+            <table className="text-xs text-left border-separate border-spacing-0" style={{ tableLayout: 'fixed', width: tableWidth, minWidth: '100%' }}>
+              <colgroup>
+                <col style={{ width: ROW_NUM_WIDTH }} />
+                {visibleColumns.map((c) => <col key={c} style={{ width: getWidth(c) }} />)}
+              </colgroup>
+              <thead className="sticky top-0 z-10">
+                <tr>
+                  <th scope="col" className="sticky left-0 z-20 bg-gray-800 border-b border-r border-gray-700/70 px-2 text-right text-[10px] font-medium text-gray-500">
+                    #
+                  </th>
+                  {visibleColumns.map((col) => (
+                    <HeaderCell
+                      key={col}
+                      col={col}
+                      width={getWidth(col)}
+                      info={columnInfo[col]}
+                      sort={sort}
+                      onSort={cycleSort}
+                      onResizeStart={startResize}
+                    />
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {order.map((i) => {
+                  const row = rows[i]
+                  const isSelected = selected === i
+                  return (
+                    <tr
+                      key={i}
+                      data-row={i}
+                      onClick={() => setSelected(isSelected ? null : i)}
+                      className={`cursor-pointer transition-colors ${
+                        isSelected ? 'bg-indigo-500/15' : 'odd:bg-gray-900 even:bg-gray-900/40 hover:bg-gray-800/70'
+                      }`}
+                    >
+                      <td className={`sticky left-0 z-[5] px-2 py-1.5 text-right text-[11px] tabular-nums border-r border-gray-800 ${
+                        isSelected ? 'bg-indigo-900/60 text-indigo-100' : 'bg-gray-900 text-gray-500'
+                      }`}>
+                        {(rowOffset + i + 1).toLocaleString()}
+                      </td>
+                      {visibleColumns.map((col) => (
+                        <Cell key={col} value={row[col]} cellKey={`${i}-${col}`} copied={copied} onCopy={copy} />
+                      ))}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {selected !== null && rows[selected] && (
+            <RowInspector
+              row={rows[selected]}
+              rowNumber={rowOffset + selected + 1}
+              columns={columns}
+              columnInfo={columnInfo}
+              onClose={closeInspector}
+              onPrev={goPrev}
+              onNext={goNext}
+            />
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-// Shared instance so the "no result yet" case (initial load, or after a failed
-// query) hands hooks the same array every render instead of a fresh one.
-const NO_COLUMNS = []
+const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
 
 export default function ResultsTable() {
-  const { result, queryError, queryLoading, currentPage, totalLabel, exportAll } = useAppContext()
-  const { copied, copy } = useCopyCell()
-  const [exporting, setExporting] = useState(false)
-  const [exportError, setExportError] = useState(null)
+  const { result, queryError, queryLoading, query, dismissError } = useAppContext()
 
-  async function handleExportAll() {
-    setExporting(true)
-    setExportError(null)
-    try {
-      await exportAll()
-    } catch (e) {
-      setExportError(e.message)
-    } finally {
-      setExporting(false)
+  if (!result) {
+    if (queryLoading) return <LoadingSkeleton />
+    if (queryError) {
+      return (
+        <div className="flex-1 min-h-0 flex flex-col gap-3">
+          <ErrorBanner error={queryError} onDismiss={dismissError} />
+        </div>
+      )
     }
-  }
-
-  const columns = result?.columns ?? NO_COLUMNS
-  const { getWidth, startResize } = useColumnResize(columns)
-
-  if (queryLoading) return <LoadingSkeleton />
-  if (queryError) return <ErrorState error={queryError} />
-  if (!result) return <EmptyState />
-
-  const { rows, row_count } = result
-  const count = row_count ?? rows.length
-
-  if (rows.length === 0) {
     return (
-      <div className="rounded-lg border border-gray-700/60 px-4 py-8 text-center">
-        <p className="text-sm text-gray-500">Query returned no rows</p>
-      </div>
+      <Panel>
+        {query.trim() ? (
+          <>
+            <p className="text-sm text-gray-300">Ready to run</p>
+            <p className="mt-1 text-xs text-gray-500">
+              Press <kbd className="rounded border border-gray-700 bg-gray-800 px-1 font-sans text-gray-300">{isMac ? '⌘' : 'Ctrl'}</kbd>{' '}
+              <kbd className="rounded border border-gray-700 bg-gray-800 px-1 font-sans text-gray-300">↵</kbd> or the Run button to see results.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-gray-300">No results yet</p>
+            <p className="mt-1 text-xs text-gray-500">Pick a table in the sidebar to preview it, or write a CQL query above.</p>
+          </>
+        )}
+      </Panel>
     )
   }
 
   return (
-    <div className="flex flex-col gap-2 min-h-0">
-      {/* Meta bar */}
-      <div className="flex items-center gap-2 text-xs text-gray-600 px-0.5">
-        <span className="tabular-nums">{count} {count === 1 ? 'row' : 'rows'}</span>
-        <span>·</span>
-        <span>{columns.length} {columns.length === 1 ? 'column' : 'columns'}</span>
-        <span>·</span>
-        <span className="tabular-nums">
-          {totalLabel ? `page ${currentPage} of ${totalLabel}` : `page ${currentPage}`}
-        </span>
-        <div className="ml-auto flex items-center gap-3">
-          {exportError && (
-            <span className="text-red-400 truncate max-w-xs" title={exportError}>
-              Export failed: {exportError}
-            </span>
-          )}
-          <span className="text-gray-700">drag edges to resize</span>
-          <button
-            onClick={handleExportAll}
-            disabled={exporting}
-            className="flex items-center gap-1 text-gray-600 hover:text-gray-300 transition-colors disabled:opacity-40"
-            title="Export all rows to CSV"
-          >
-            {exporting ? <SpinIcon /> : <DownloadIcon />}
-            <span>{exporting ? 'Exporting…' : 'Export all'}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="overflow-auto rounded-lg border border-gray-700/60 max-h-[56vh]">
-        <table
-          className="text-xs text-left border-collapse"
-          style={{ tableLayout: 'fixed', width: 'max-content', minWidth: '100%' }}
-        >
-          <thead className="sticky top-0 z-10">
-            <tr className="bg-gray-800">
-              {columns.map((col) => (
-                <HeaderCell
-                  key={col}
-                  col={col}
-                  width={getWidth(col)}
-                  onResizeStart={startResize}
-                />
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr
-                key={i}
-                className={`border-b border-gray-800/50 hover:bg-indigo-950/20 transition-colors ${
-                  i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-900/50'
-                }`}
-              >
-                {columns.map((col) => (
-                  <Cell
-                    key={col}
-                    value={row[col]}
-                    rowIndex={i}
-                    col={col}
-                    copied={copied}
-                    onCopy={copy}
-                  />
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="flex-1 min-h-0 flex flex-col gap-3">
+      {queryError && <ErrorBanner error={queryError} onDismiss={dismissError} title="Couldn't load the next page" />}
+      <ResultGrid result={result} />
     </div>
   )
 }
