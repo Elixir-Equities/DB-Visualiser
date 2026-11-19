@@ -67,6 +67,36 @@ spec:
               value: "${LOG_LEVEL}"
             - name: BACKEND_URL
               value: "${BACKEND_URL}"
+          # Probes hit the backend's unauthenticated /api/v1/health directly.
+          # It answers 200 whenever the process is serving (even if ScyllaDB
+          # is degraded), so these detect a dead/hung backend, not a DB outage.
+          # nginx needs no probe of its own: the entrypoint exits the
+          # container if either process dies.
+          #
+          # Startup: the backend connects to ScyllaDB before serving, so allow
+          # up to 2 minutes (24 x 5s) before liveness takes over.
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: backend
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: backend
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: backend
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
           resources:
             requests:
               memory: "1240Mi"
