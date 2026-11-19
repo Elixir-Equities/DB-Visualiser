@@ -70,10 +70,10 @@ spec:
           resources:
             requests:
               memory: "1240Mi"
-              cpu: "50m"
+              cpu: "12m"
             limits:
               memory: "2480Mi"
-              cpu: "500m"
+              cpu: "1000m"
 
 ---
 apiVersion: v1
@@ -112,8 +112,8 @@ spec:
       resource:
         name: cpu
         target:
-          type: Utilization
-          averageUtilization: 700
+          type: AverageValue
+          averageValue: 700m
 
 ---
 apiVersion: policy/v1
