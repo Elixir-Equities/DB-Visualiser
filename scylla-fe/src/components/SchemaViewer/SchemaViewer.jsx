@@ -1,110 +1,131 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useAppContext } from '../../context/AppContext.jsx'
 import { useSchema } from '../../hooks/useSchema.js'
+import { useCopy } from '../../hooks/useCopy.js'
+import { errorHint } from '../../services/errorHints.js'
 import Spinner from '../ui/Spinner.jsx'
+import { AlertIcon, CheckIcon, CopyIcon, EditIcon, PlayIcon, SearchIcon } from '../ui/icons.jsx'
+import { KEY_META } from './keyMeta.js'
 
-// ─── Key type badge ───────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const KIND_META = {
-  partition_key: {
-    label: 'partition',
-    className: 'bg-indigo-600/20 text-indigo-300 border border-indigo-600/40',
-  },
-  clustering: {
-    label: 'clustering',
-    className: 'bg-violet-600/20 text-violet-300 border border-violet-600/40',
-  },
-  regular: {
-    label: 'regular',
-    className: 'bg-gray-800 text-gray-500 border border-gray-700',
-  },
+const quoteIdent = (name) => (/^[a-z_][a-z0-9_]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`)
+
+/** A literal of the right shape for a CQL type, so templates read naturally. */
+function placeholderFor(type = '') {
+  const t = type.toLowerCase()
+  if (/^(text|varchar|ascii|inet)$/.test(t)) return "'…'"
+  if (/^(int|bigint|smallint|tinyint|varint|counter)$/.test(t)) return '0'
+  if (/^(float|double|decimal)$/.test(t)) return '0.0'
+  if (/^(uuid|timeuuid)$/.test(t)) return '00000000-0000-0000-0000-000000000000'
+  if (t === 'boolean') return 'true'
+  if (t === 'timestamp' || t === 'date') return "'2026-01-01'"
+  return '?'
 }
 
+function partitionQuery(keyspace, table, partitionKeys) {
+  const where = partitionKeys.map((c) => `${quoteIdent(c.name)} = ${placeholderFor(c.type)}`).join('\n  AND ')
+  return `SELECT * FROM ${keyspace}.${table}\nWHERE ${where}\nLIMIT 100;`
+}
+
+function buildDDL(keyspace, table, columns) {
+  const pk = columns.filter((c) => c.kind === 'partition_key').map((c) => quoteIdent(c.name))
+  const ck = columns.filter((c) => c.kind === 'clustering').map((c) => quoteIdent(c.name))
+  const width = Math.max(...columns.map((c) => quoteIdent(c.name).length))
+  const lines = columns.map((c) => {
+    const name = quoteIdent(c.name)
+    return `  ${name.padEnd(width)}  ${c.type}${c.kind === 'static' ? ' STATIC' : ''},`
+  })
+  const partition = pk.length > 1 ? `(${pk.join(', ')})` : pk[0] ?? ''
+  const primary = [partition, ...ck].filter(Boolean).join(', ')
+  return `CREATE TABLE ${keyspace}.${table} (\n${lines.join('\n')}\n  PRIMARY KEY (${primary})\n);`
+}
+
+// ─── Pieces ───────────────────────────────────────────────────────────────────
+
 function KindBadge({ kind }) {
-  const meta = KIND_META[kind] ?? KIND_META.regular
+  const meta = KEY_META[kind] ?? KEY_META.regular
   return (
-    <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${meta.className}`}>
+    <span className={`inline-flex items-center rounded px-1.5 py-px text-[11px] font-medium ${meta.badge}`}>
       {meta.label}
     </span>
   )
 }
 
-// ─── Example query with copy ──────────────────────────────────────────────────
-
-function ExampleQuery({ keyspace, table }) {
-  const { setQuery } = useAppContext()
-  const cql = `SELECT * FROM ${keyspace}.${table} LIMIT 10;`
-  const [copied, setCopied] = useState(false)
-  const timer = useRef(null)
-
-  function handleCopy() {
-    navigator.clipboard.writeText(cql).then(() => {
-      setCopied(true)
-      clearTimeout(timer.current)
-      timer.current = setTimeout(() => setCopied(false), 1500)
-    })
-  }
-
+function CodeCard({ title, subtitle, code, actions }) {
+  const { copied, copy } = useCopy()
   return (
-    <div className="rounded-lg border border-gray-700/60 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-800 bg-gray-800/50">
-        <span className="text-xs text-gray-500 font-medium">Example query</span>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setQuery(cql)}
-            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-          >
-            Open in editor
-          </button>
-          <button
-            onClick={handleCopy}
-            className={`text-xs transition-colors ${copied ? 'text-green-400' : 'text-gray-500 hover:text-gray-300'}`}
-          >
-            {copied ? 'Copied!' : 'Copy'}
-          </button>
+    <section className="rounded-lg border border-gray-800 bg-gray-900 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800">
+        <div className="mr-auto min-w-0">
+          <h3 className="text-xs font-medium text-gray-200">{title}</h3>
+          {subtitle && <p className="text-[11px] text-gray-500">{subtitle}</p>}
         </div>
+        {actions}
+        <button
+          onClick={() => copy('code', code)}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${
+            copied ? 'text-emerald-400' : 'text-gray-300 hover:text-white hover:bg-gray-800'
+          }`}
+        >
+          {copied ? <CheckIcon className="w-3 h-3" /> : <CopyIcon className="w-3 h-3" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
       </div>
-      <pre className="px-4 py-3 text-xs font-mono text-gray-300 bg-gray-900">{cql}</pre>
+      <pre className="px-4 py-3 text-xs font-mono text-gray-200 overflow-auto max-h-80 leading-relaxed">{code}</pre>
+    </section>
+  )
+}
+
+function KeySummary({ label, cols, kind }) {
+  if (cols.length === 0) return null
+  const meta = KEY_META[kind]
+  return (
+    <div className="flex items-baseline gap-2 min-w-0">
+      <span className="text-xs text-gray-400 flex-shrink-0">{label}</span>
+      <span className={`font-mono text-xs truncate ${meta.text}`}>{cols.map((c) => c.name).join(', ')}</span>
     </div>
   )
 }
 
+const actionButton =
+  'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors'
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function SchemaViewer() {
-  const { selectedKeyspace, selectedTable } = useAppContext()
+  const { selectedKeyspace, selectedTable, selectTable, openInEditor } = useAppContext()
   const { schema, loading, error } = useSchema(selectedKeyspace, selectedTable)
+  const [filter, setFilter] = useState('')
+  const { copied, copy } = useCopy()
 
-  // No table selected yet
   if (!selectedKeyspace || !selectedTable) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 gap-3">
-        <svg className="w-9 h-9 text-gray-700 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18M10 4v16M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z" />
-        </svg>
-        <p className="text-sm text-gray-500">Select a table to view its schema</p>
+      <div className="flex flex-col items-center justify-center py-24 gap-2 text-center">
+        <p className="text-sm text-gray-300">No table selected</p>
+        <p className="text-xs text-gray-500">Pick a table in the sidebar to see its columns and keys.</p>
       </div>
     )
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20 gap-2 text-gray-600">
-        <Spinner className="w-4 h-4 text-gray-600" />
+      <div className="flex items-center justify-center py-24 gap-2 text-gray-400">
+        <Spinner className="w-4 h-4" />
         <span className="text-sm">Loading schema…</span>
       </div>
     )
   }
 
   if (error) {
+    const hint = errorHint(error)
     return (
-      <div className="rounded-lg border border-red-900/50 bg-red-950/20 px-4 py-3 flex gap-3">
-        <svg className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <div className="min-w-0">
-          <p className="text-xs font-medium text-red-400">Failed to load schema</p>
-          <p className="text-xs text-red-500/70 mt-0.5 font-mono">{error}</p>
+      <div role="alert" className="rounded-lg border border-red-900/70 bg-red-950/30 px-4 py-3 flex gap-3">
+        <AlertIcon className="w-4 h-4 text-red-400 mt-0.5" />
+        <div className="min-w-0 space-y-1">
+          <p className="text-sm font-medium text-red-200">Couldn't load the schema</p>
+          {hint && <p className="text-xs text-red-100/90">{hint}</p>}
+          <p className="text-xs text-red-300/90 font-mono break-words">{error}</p>
         </div>
       </div>
     )
@@ -113,73 +134,127 @@ export default function SchemaViewer() {
   if (!schema) return null
 
   const { columns = [] } = schema
+  const tableName = schema.table_name ?? selectedTable
   const partitionKeys = columns.filter((c) => c.kind === 'partition_key')
   const clusteringKeys = columns.filter((c) => c.kind === 'clustering')
-  const regularCols = columns.filter((c) => c.kind === 'regular')
+  const q = filter.trim().toLowerCase()
+  const shown = q ? columns.filter((c) => c.name.toLowerCase().includes(q) || c.type.toLowerCase().includes(q)) : columns
+
+  const pkQuery = partitionKeys.length ? partitionQuery(selectedKeyspace, tableName, partitionKeys) : null
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4 max-w-6xl">
       {/* Header */}
-      <div className="flex items-baseline gap-3">
-        <h2 className="text-sm font-semibold text-white">
-          {schema.table_name ?? selectedTable}
-        </h2>
-        <span className="text-xs text-gray-600">{selectedKeyspace}</span>
-        <span className="ml-auto text-xs text-gray-600 tabular-nums">
-          {columns.length} {columns.length === 1 ? 'column' : 'columns'}
-        </span>
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="mr-auto min-w-0 space-y-1.5">
+          <h2 className="flex items-baseline gap-2 min-w-0">
+            <span className="text-base font-semibold text-white truncate">{tableName}</span>
+            <span className="text-xs text-gray-400">in {selectedKeyspace}</span>
+            <span className="text-xs text-gray-500 tabular-nums">· {columns.length} {columns.length === 1 ? 'column' : 'columns'}</span>
+          </h2>
+          <KeySummary label="Partition key" cols={partitionKeys} kind="partition_key" />
+          <KeySummary label="Clustering" cols={clusteringKeys} kind="clustering" />
+        </div>
+        <div className="flex items-center gap-2">
+          {pkQuery && (
+            <button
+              onClick={() => openInEditor(pkQuery)}
+              className={`${actionButton} text-gray-200 border border-gray-700 hover:bg-gray-800`}
+              title="Open a query filtered by the partition key in the editor"
+            >
+              <EditIcon className="w-3.5 h-3.5" />
+              Query by partition key
+            </button>
+          )}
+          <button
+            onClick={() => selectTable(selectedKeyspace, selectedTable)}
+            className={`${actionButton} bg-indigo-600 hover:bg-indigo-500 text-white`}
+          >
+            <PlayIcon className="w-3 h-3" />
+            Preview data
+          </button>
+        </div>
       </div>
 
-      {/* Legend */}
-      <div className="flex items-center gap-3">
-        {partitionKeys.length > 0 && <KindBadge kind="partition_key" />}
-        {clusteringKeys.length > 0 && <KindBadge kind="clustering" />}
-        {regularCols.length > 0 && <KindBadge kind="regular" />}
-      </div>
-
-      {/* Column table */}
-      <div className="overflow-auto rounded-lg border border-gray-700/60">
+      {/* Columns */}
+      <section className="rounded-lg border border-gray-800 overflow-hidden">
+        {columns.length > 10 && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 bg-gray-900">
+            <SearchIcon className="w-3.5 h-3.5 text-gray-500" />
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter columns by name or type…"
+              aria-label="Filter columns"
+              className="flex-1 bg-transparent text-xs text-gray-100 placeholder-gray-500 outline-none"
+            />
+            {q && <span className="text-[11px] text-gray-500 tabular-nums">{shown.length} of {columns.length}</span>}
+          </div>
+        )}
         <table className="w-full text-xs text-left border-collapse">
-          <thead className="sticky top-0 bg-gray-800">
+          <thead className="bg-gray-800/80">
             <tr>
-              <th className="px-3 py-2 text-gray-400 font-medium border-b border-gray-700 w-8 text-center">#</th>
-              <th className="px-3 py-2 text-gray-400 font-medium border-b border-gray-700">Column</th>
-              <th className="px-3 py-2 text-gray-400 font-medium border-b border-gray-700">Type</th>
-              <th className="px-3 py-2 text-gray-400 font-medium border-b border-gray-700">Key</th>
+              <th scope="col" className="px-3 py-2 text-gray-400 font-medium w-10 text-right">#</th>
+              <th scope="col" className="px-3 py-2 text-gray-400 font-medium">Column</th>
+              <th scope="col" className="px-3 py-2 text-gray-400 font-medium">Type</th>
+              <th scope="col" className="px-3 py-2 text-gray-400 font-medium w-36">Key</th>
             </tr>
           </thead>
           <tbody>
-            {columns.map((col, i) => {
-              const isPartition = col.kind === 'partition_key'
-              const isClustering = col.kind === 'clustering'
-
+            {shown.map((col) => {
+              const meta = KEY_META[col.kind] ?? KEY_META.regular
+              const index = columns.indexOf(col) + 1
               return (
-                <tr
-                  key={col.name}
-                  className={`
-                    border-b border-gray-800/60 transition-colors
-                    ${isPartition ? 'bg-indigo-950/20 hover:bg-indigo-950/40' : ''}
-                    ${isClustering ? 'bg-violet-950/20 hover:bg-violet-950/40' : ''}
-                    ${!isPartition && !isClustering ? 'hover:bg-gray-800/40' : ''}
-                  `}
-                >
-                  <td className="px-3 py-2 text-gray-700 text-center tabular-nums">{i + 1}</td>
-                  <td className={`px-3 py-2 font-mono font-medium ${isPartition ? 'text-indigo-300' : isClustering ? 'text-violet-300' : 'text-gray-300'}`}>
-                    {col.name}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-gray-500">{col.type}</td>
+                <tr key={col.name} className="group border-t border-gray-800/70 hover:bg-gray-900/80">
+                  <td className="px-3 py-2 text-gray-500 text-right tabular-nums">{index}</td>
                   <td className="px-3 py-2">
-                    <KindBadge kind={col.kind} />
+                    <button
+                      onClick={() => copy(col.name, col.name)}
+                      className={`inline-flex items-center gap-1.5 font-mono font-medium ${meta.text} hover:underline underline-offset-2`}
+                      title="Copy column name"
+                    >
+                      {col.name}
+                      {copied === col.name
+                        ? <CheckIcon className="w-3 h-3 text-emerald-400" />
+                        : <CopyIcon className="w-3 h-3 text-gray-500 opacity-0 group-hover:opacity-100" />}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2 font-mono text-gray-300">{col.type}</td>
+                  <td className="px-3 py-2">
+                    {col.kind !== 'regular' && <KindBadge kind={col.kind} />}
                   </td>
                 </tr>
               )
             })}
+            {shown.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-3 py-6 text-center text-gray-500">No columns match “{filter}”.</td>
+              </tr>
+            )}
           </tbody>
         </table>
-      </div>
+      </section>
 
-      {/* Example query */}
-      <ExampleQuery keyspace={selectedKeyspace} table={selectedTable} />
+      {/* Queries & DDL */}
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
+        {pkQuery && (
+          <CodeCard
+            title="Query by partition key"
+            subtitle="The efficient way to read this table — replace the placeholder values."
+            code={pkQuery}
+            actions={
+              <button onClick={() => openInEditor(pkQuery)} className="px-2 py-1 rounded-md text-xs text-indigo-300 hover:text-indigo-200 hover:bg-gray-800">
+                Open in editor
+              </button>
+            }
+          />
+        )}
+        <CodeCard
+          title="Table definition"
+          subtitle="Reconstructed from columns — clustering order and table options not shown."
+          code={buildDDL(selectedKeyspace, tableName, columns)}
+        />
+      </div>
     </div>
   )
 }
